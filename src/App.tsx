@@ -5,6 +5,7 @@ import {
   buildReport,
   fetchIntegrations,
   publish,
+  type DayReport,
   type IntegrationStatus,
   type PublishResult,
 } from "./game/report";
@@ -14,6 +15,54 @@ import { DEPT_ROOMS } from "./game/world";
 import { COMPANY, STORAGE_LINK } from "../company.config";
 
 type View = "live" | "dashboard";
+
+/** DayReport를 사람이 읽기 좋은 텍스트로 바꾼다 */
+function reportToText(report: DayReport): string {
+  const lines: string[] = [];
+  lines.push(`${report.title}`);
+  lines.push(`생성 시각: ${new Date().toLocaleString("ko-KR")}`);
+  lines.push(`현재 시각(사무실 기준): ${report.clock} · ${report.phase}`);
+  lines.push("");
+  lines.push(
+    `[진행 현황] 전체 ${report.counts.total} · 완료 ${report.counts.done} · 진행중 ${report.counts.working} · 승인대기 ${report.counts.approval} · 연동대기 ${report.counts.blocked}`,
+  );
+  lines.push("");
+
+  lines.push("■ 오늘의 하이라이트");
+  lines.push(report.highlights.length ? report.highlights.map((h) => `- ${h}`).join("\n") : "- (아직 없음)");
+  lines.push("");
+
+  lines.push("■ 결재/의사결정");
+  lines.push(report.decisions.map((d) => `- ${d}`).join("\n"));
+  lines.push("");
+
+  lines.push("■ 리스크 / 막힌 부분");
+  lines.push(report.risks.length ? report.risks.map((r) => `- ${r}`).join("\n") : "- (없음)");
+  lines.push("");
+
+  lines.push("■ 다음 할 일");
+  lines.push(report.next.map((n) => `- ${n}`).join("\n"));
+  lines.push("");
+
+  lines.push("■ 전체 로그");
+  lines.push(report.log.length ? report.log.map((l) => `[${l.time}] ${l.text}`).join("\n") : "- (로그 없음)");
+  lines.push("");
+
+  return lines.join("\n");
+}
+
+/** 문자열을 .txt 파일로 즉시 다운로드한다 (서버 없이 브라우저에서 처리) */
+function downloadTextFile(filename: string, text: string) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
 const statusClass: Record<DeptStatus, string> = {
   "완료": "done",
@@ -97,6 +146,13 @@ export default function Home() {
   }, []);
 
   const onSelect = useCallback((agent: Agent) => setSelectedId(agent.id), []);
+
+  const downloadReport = useCallback(() => {
+    const report = buildReport(engine.snapshot());
+    const dateStr = new Date().toISOString().slice(0, 10);
+    downloadTextFile(`${COMPANY.reportName}_보고서_${dateStr}.txt`, reportToText(report));
+    showToast("보고서를 다운로드했어요");
+  }, [engine, showToast]);
 
   // 연동 설정 여부를 서버에서 받아온다 (값이 아니라 설정 여부만)
   useEffect(() => {
@@ -230,6 +286,7 @@ export default function Home() {
             onApprove={approve}
             onDuty={onDuty}
             onPublish={() => void sendReport(false)}
+            onDownload={downloadReport}
             publishBusy={publishState.busy}
             publishResult={publishState.result}
           />
@@ -287,6 +344,7 @@ function LiveView({
   onApprove,
   onDuty,
   onPublish,
+  onDownload,
   publishBusy,
   publishResult,
 }: {
@@ -300,6 +358,7 @@ function LiveView({
   onApprove: () => void;
   onDuty: number;
   onPublish: () => void;
+  onDownload: () => void;
   publishBusy: boolean;
   publishResult: PublishResult | null;
 }) {
@@ -364,6 +423,13 @@ function LiveView({
           title="완료 보고를 Notion에 저장하고 같은 내용을 Discord로 보냅니다"
         >
           {publishBusy ? "발행 중…" : "📤 보고 발행"}
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={onDownload}
+          title="지금까지 진행 상황을 텍스트 파일로 내 컴퓨터에 저장합니다"
+        >
+          📥 보고서 다운로드
         </button>
         <div className="live-progress">
           <span>

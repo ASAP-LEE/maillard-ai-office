@@ -73,9 +73,12 @@ export const DEPT_LEAD: Record<string, StaffSeed> = Object.fromEntries(
   STAFF.filter((s) => s.rank === "lead").map((s) => [s.deptId, s]),
 );
 
-/** 부서별 오늘 업무 · 한줄보고 */
-export const DEPT_BRIEF: Record<string, { task: string; report: string }> = Object.fromEntries(
-  DEPARTMENTS.map((d) => [d.id, { task: d.task, report: d.report }]),
+/** 부서별 오늘 업무 · 한줄보고 · 내일 계획 · 보완할 점 */
+export const DEPT_BRIEF: Record<
+  string,
+  { task: string; report: string; tomorrow: string; improve: string }
+> = Object.fromEntries(
+  DEPARTMENTS.map((d) => [d.id, { task: d.task, report: d.report, tomorrow: d.tomorrow, improve: d.improve }]),
 );
 
 /** 아직 외부 연동이 안 붙은 부서 → 화면에 "연동 대기"로 표시 */

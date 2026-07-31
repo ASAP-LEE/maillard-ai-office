@@ -96,6 +96,15 @@ export type ChatEntry = {
   text: string;
 };
 
+/** 오늘 승인된 콘텐츠의 상세 제안 — "무엇을 어떻게 만들지" */
+export type ContentPlan = {
+  title: string;
+  keyword: string;
+  score: number;
+  angle: string;
+  steps: string[];
+};
+
 type Slot = {
   gen: Generator<number | (() => boolean), void, void> | null;
   wait: number;
@@ -123,6 +132,7 @@ export type Snapshot = {
   focusMode: boolean;
   spotlight: string | null;
   busyWithOrder: boolean;
+  contentPlan: ContentPlan | null;
 };
 
 const PHASES = [
@@ -143,8 +153,8 @@ const PHASES = [
 
 const BLOCKED_DEPTS = new Set(["brand", "partner", "finance"]);
 
-/** 연동 대기 부서가 멈춰 있는 진짜 이유 */
-const BLOCK_REASON: Record<string, string> = {
+/** 연동 대기 부서가 멈춰 있는 진짜 이유 (+ 해결 방법) */
+export const BLOCK_REASON: Record<string, string> = {
   brand: "Instagram 계정이 아직 연동 전이라 지표를 읽을 수 없어요. 없는 숫자를 만들지는 않습니다. 연동만 되면 바로 돌려요.",
   partner: "Gmail 연동 전이라 협업 메일을 못 읽어요. 연결되면 답장 초안까지 준비해둡니다.",
   finance: "재무 현황 파일이 아직 안 왔어요. 대표님이 파일만 주시면 그날 안에 정리합니다.",
@@ -192,6 +202,8 @@ export class Company {
   chat: ChatEntry[] = [];
   focusMode = false;
   spotlight: string | null = null;
+  /** 오늘 승인 대상 콘텐츠의 상세 제안 */
+  contentPlan: ContentPlan | null = null;
 
   private spotlightUntil = 0;
   private elapsed = 0;
@@ -230,6 +242,7 @@ export class Company {
     this.chat = [];
     this.focusMode = false;
     this.spotlight = null;
+    this.contentPlan = null;
     this.spotlightUntil = 0;
     this.elapsed = 0;
     this.approvalSince = null;
@@ -426,6 +439,19 @@ export class Company {
     this.stand(areum);
     this.say(areum, "TOP 3 정리했어요. 1위는 92점!", 3);
     this.pushLog("💡", "콘텐츠 전략 1팀: TOP 3 확정 (1위 92점 · AI 회사 구축기)", "pink");
+    this.contentPlan = {
+      title: "AI 회사가 나 대신 출근한다면?",
+      keyword: "AI 자동화 회사 만들기",
+      score: 92,
+      angle:
+        "실제로 돌아가는 'AI 직원 32명 사무실'을 화면으로 보여주는 콘텐츠예요. 검색 유입보다 화제성·공유를 노려 채널 인지도를 먼저 끌어올리는 게 목적입니다.",
+      steps: [
+        "원고팀(한도빈): 후킹 도입 3줄 + 실제 화면 캡처 기반 스토리텔링 원고 작성",
+        "영상팀(송리원): 오피스 시뮬레이션 화면 녹화 + 하이라이트 20초 컷 편집",
+        "이미지팀(이가림): 썸네일 3안 제작 (오피스 전경 / 클로즈업 / 텍스트형)",
+        "검수팀(윤규아): 발행 전 과장 표현·근거 없는 수치 최종 스캔",
+      ],
+    };
     yield 1.8;
     this.sitAtDesk(areum);
 
@@ -1247,6 +1273,7 @@ export class Company {
       focusMode: this.focusMode,
       spotlight: this.spotlight,
       busyWithOrder: this.side.gen !== null,
+      contentPlan: this.contentPlan,
     };
   }
 }

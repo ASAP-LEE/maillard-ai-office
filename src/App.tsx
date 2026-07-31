@@ -172,16 +172,13 @@ export default function Home() {
         const result = await publish(buildReport(engine.snapshot()));
         setPublishState({ busy: false, result, error: "" });
 
-        const parts: string[] = [];
-        parts.push(result.notion.ok ? "Notion 저장 완료" : `Notion ${result.notion.detail ?? "실패"}`);
-        parts.push(result.discord.ok ? "Discord 전송 완료" : `Discord ${result.discord.detail ?? "실패"}`);
-        engine.pushLog(
-          result.notion.ok && result.discord.ok ? "📤" : "⚠️",
-          `완료 보고 발행 — ${parts.join(" / ")}`,
-          result.notion.ok && result.discord.ok ? "mint" : "lav",
+        engine.pushLog("📦", "오늘자 보고서 준비 완료 — 감사팀 다운로드 가능", "mint");
+        engine.pushChat(
+          "staff",
+          "김세리",
+          "보고서 발행 결과입니다.\n· 감사팀이 확인할 수 있도록 보고서를 준비해 뒀어요.\n· 위쪽 '📥 보고서 다운로드' 버튼을 누르면 오늘자 보고서를 받을 수 있어요.",
         );
-        engine.pushChat("staff", "김세리", `보고서 발행 결과입니다.\n· ${parts.join("\n· ")}`);
-        if (!auto) showToast(result.notion.ok || result.discord.ok ? "보고서를 발행했어요" : "발행 실패 — 연동 설정 필요");
+        if (!auto) showToast("보고서를 준비했어요 — 감사팀이 다운로드할 수 있어요");
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         setPublishState({ busy: false, result: null, error: message });
@@ -468,12 +465,12 @@ function LiveView({
           🎥 자동 추적 {follow ? "ON" : "OFF"}
         </button>
         <button
-          className={`btn btn-ghost publish-btn ${publishResult?.notion.ok || publishResult?.discord.ok ? "sent" : ""}`}
+          className={`btn btn-ghost publish-btn ${publishResult ? "sent" : ""}`}
           onClick={onPublish}
           disabled={publishBusy}
-          title="완료 보고를 Notion에 저장하고 같은 내용을 Discord로 보냅니다"
+          title="완료 보고를 준비해서 감사팀이 다운로드할 수 있도록 알립니다"
         >
-          {publishBusy ? "발행 중…" : "📤 보고 발행"}
+          {publishBusy ? "준비 중…" : "📤 보고 발행"}
         </button>
         <button
           className="btn btn-ghost"

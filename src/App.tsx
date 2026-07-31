@@ -115,6 +115,10 @@ export default function Home() {
     error: "",
   });
   const publishedRef = useRef(false);
+  const [autoLoop, setAutoLoop] = useState(false);
+  const [dayCount, setDayCount] = useState(1);
+  const autoLoopRef = useRef(autoLoop);
+  autoLoopRef.current = autoLoop;
 
   useEffect(() => {
     let raf = 0;
@@ -188,14 +192,36 @@ export default function Home() {
     [engine, showToast],
   );
 
-  // 하루가 끝나면 자동으로 한 번 발행한다
+  // 하루가 끝나면 자동으로 한 번 발행한다 (+ 자동 반복 모드면 보고서 다운로드 후 바로 다음날 출근)
   useEffect(() => {
     if (snap.dayComplete && !publishedRef.current) {
       publishedRef.current = true;
       void sendReport(true);
+
+      if (autoLoopRef.current) {
+        const report = buildReport(engine.snapshot());
+        const dateStr = new Date().toISOString().slice(0, 10);
+        downloadTextFile(`${COMPANY.reportName}_보고서_${dayCount}일차_${dateStr}.txt`, reportToText(report));
+
+        // 잠깐 숨 돌린 뒤(직원들 라운지 연출 감상 시간) 바로 다음날을 시작한다
+        window.setTimeout(() => {
+          if (!autoLoopRef.current) return;
+          engine.start();
+          setDayCount((n) => n + 1);
+          publishedRef.current = false;
+        }, 4000);
+      }
     }
     if (!snap.dayComplete && snap.running) publishedRef.current = false;
-  }, [snap.dayComplete, snap.running, sendReport]);
+  }, [snap.dayComplete, snap.running, sendReport, engine, dayCount]);
+
+  // 자동 반복 모드일 때는 "대표 승인" 대기가 뜨면 자동으로 승인해서 멈추지 않게 한다
+  useEffect(() => {
+    if (autoLoop && snap.approvalPending) {
+      const timer = window.setTimeout(() => engine.approve(), 1200);
+      return () => window.clearTimeout(timer);
+    }
+  }, [autoLoop, snap.approvalPending, engine]);
 
   const askAgent = useCallback(
     (agent: Agent) => {
@@ -213,7 +239,16 @@ export default function Home() {
     engine.start();
     setBriefing(false);
     setView("live");
+    setDayCount(1);
     showToast("07:00 — AI 직원 32명이 출근합니다 ✨");
+  };
+
+  const toggleAutoLoop = () => {
+    setAutoLoop((v) => {
+      const next = !v;
+      showToast(next ? "🔁 무한 반복 모드 ON — 하루가 끝나면 자동으로 다음날이 시작돼요" : "🔁 무한 반복 모드 OFF");
+      return next;
+    });
   };
 
   const approve = () => {
@@ -289,6 +324,9 @@ export default function Home() {
             onDownload={downloadReport}
             publishBusy={publishState.busy}
             publishResult={publishState.result}
+            autoLoop={autoLoop}
+            onToggleAutoLoop={toggleAutoLoop}
+            dayCount={dayCount}
           />
         ) : (
           <DashboardView
@@ -347,6 +385,9 @@ function LiveView({
   onDownload,
   publishBusy,
   publishResult,
+  autoLoop,
+  onToggleAutoLoop,
+  dayCount,
 }: {
   engine: Company;
   snap: Snapshot;
@@ -361,6 +402,9 @@ function LiveView({
   onDownload: () => void;
   publishBusy: boolean;
   publishResult: PublishResult | null;
+  autoLoop: boolean;
+  onToggleAutoLoop: () => void;
+  dayCount: number;
 }) {
   const progress = Math.round((snap.phaseIndex / (PHASES.length - 1)) * 100);
 
@@ -375,7 +419,7 @@ function LiveView({
           <p>출근하고, 자리에서 일하고, 회의실에 모여 회의하고, 대표실로 보고하러 갑니다.</p>
         </div>
         <div className="live-clock">
-          <span>SEOUL</span>
+          <span>SEOUL · {dayCount}일차</span>
           <b>{snap.clock}</b>
           <small>{snap.phase}</small>
         </div>
@@ -384,6 +428,13 @@ function LiveView({
       <section className="live-bar">
         <button className="btn btn-primary" onClick={onStart} disabled={snap.running}>
           {snap.running ? "직원들이 일하는 중…" : snap.dayComplete ? "다시 출근시키기" : "오늘 업무 시작하기"}
+        </button>
+        <button
+          className={`btn btn-ghost ${autoLoop ? "on" : ""}`}
+          onClick={onToggleAutoLoop}
+          title="켜두면 하루가 끝나도 쉬지 않고 바로 다음날을 시작해요. 하루치 보고서도 그때마다 자동으로 다운로드돼요."
+        >
+          {autoLoop ? "🔁 무한 반복 ON" : "🔁 무한 반복 OFF"}
         </button>
         <button className="btn btn-ghost" onClick={() => engine.togglePause()}>
           {snap.paused ? "▶ 재생" : "⏸ 일시정지"}

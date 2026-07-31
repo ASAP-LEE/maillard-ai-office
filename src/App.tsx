@@ -32,16 +32,49 @@ function reportToText(report: DayReport): string {
   lines.push(report.highlights.length ? report.highlights.map((h) => `- ${h}`).join("\n") : "- (아직 없음)");
   lines.push("");
 
+  lines.push("■ 오늘의 콘텐츠 제안 (무엇을, 어떻게 만들지)");
+  if (report.contentProposal) {
+    const p = report.contentProposal;
+    lines.push(`- 제목: ${p.title} (채점 ${p.score}점)`);
+    lines.push(`- 타깃 키워드: ${p.keyword}`);
+    lines.push(`- 기획 의도: ${p.angle}`);
+    lines.push("- 실행 계획:");
+    lines.push(p.steps.map((s) => `  · ${s}`).join("\n"));
+  } else {
+    lines.push("- 아직 확정된 콘텐츠 제안이 없어요.");
+  }
+  lines.push("");
+
   lines.push("■ 결재/의사결정");
   lines.push(report.decisions.map((d) => `- ${d}`).join("\n"));
   lines.push("");
 
-  lines.push("■ 리스크 / 막힌 부분");
-  lines.push(report.risks.length ? report.risks.map((r) => `- ${r}`).join("\n") : "- (없음)");
+  lines.push("■ 리스크 / 막힌 부분 (해결 방법 포함)");
+  lines.push(
+    report.risks.length
+      ? report.risks
+          .map((r) => `- ${r.team}: ${r.issue}\n  → 해결 방법: ${r.solution}`)
+          .join("\n")
+      : "- (없음)",
+  );
   lines.push("");
 
   lines.push("■ 다음 할 일");
   lines.push(report.next.map((n) => `- ${n}`).join("\n"));
+  lines.push("");
+
+  lines.push("■ 팀별 팀장 일일 보고 (오늘 한 일 · 내일 계획 · 보완할 점)");
+  lines.push(
+    report.teamReports
+      .map((t) => {
+        const parts = [`- ${t.team} (팀장 ${t.lead}) · 상태: ${t.status}`, `  오늘: ${t.today}`];
+        if (t.risk) parts.push(`  리스크: ${t.risk} → 해결 방법: ${t.solution}`);
+        parts.push(`  내일 계획: ${t.tomorrow}`);
+        parts.push(`  보완할 점: ${t.improve}`);
+        return parts.join("\n");
+      })
+      .join("\n\n"),
+  );
   lines.push("");
 
   lines.push("■ 전체 로그");
@@ -820,27 +853,14 @@ function DashboardView({
   integrations: IntegrationStatus | null;
   publishResult: PublishResult | null;
 }) {
-  // 서버가 알려준 실제 설정 상태로 표시한다 (연결됐다고 거짓 보고하지 않는다)
+  // Notion·Discord 같은 외부 서비스로 자동 전송하지 않는다. 보고서는 감사팀이 직접
+  // 다운로드하도록 하고, 나머지는 아직 실제로 연동이 안 된 항목만 "대기"로 정직하게 표시한다.
   const liveRows = integrations
     ? [
         {
-          name: "Notion 저장",
-          status: publishResult?.notion.ok
-            ? "저장 성공"
-            : integrations.notion?.configured
-              ? "키 설정됨"
-              : "키 미설정",
-          tone: publishResult?.notion.ok ? "mint" : integrations.notion?.configured ? "yellow" : "lav",
-          href: "",
-        },
-        {
-          name: "Discord 전송",
-          status: publishResult?.discord.ok
-            ? "전송 성공"
-            : integrations.discord?.configured
-              ? "웹훅 설정됨"
-              : "웹훅 미설정",
-          tone: publishResult?.discord.ok ? "mint" : integrations.discord?.configured ? "yellow" : "lav",
+          name: "일일 보고서 (감사팀용)",
+          status: publishResult?.ready ? "다운로드 가능" : "발행 전",
+          tone: publishResult?.ready ? "mint" : "lav",
           href: "",
         },
         { name: "Instagram", status: integrations.instagram?.need ?? "연동 대기", tone: "lav", href: "" },

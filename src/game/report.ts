@@ -2,7 +2,7 @@
 // 이 정적 사이트(GitHub Pages) 버전은 서버가 없어서 Notion·Discord 같은 외부 서비스로
 // 자동 전송하지 않습니다. 대신 감사팀이 직접 받아볼 수 있도록 브라우저에서 바로
 // 파일로 다운로드하는 방식만 씁니다 (App.tsx의 downloadTextFile 참고).
-import { BLOCK_REASON, type ContentPlan, type Snapshot } from "./sim";
+import { BLOCK_REASON, type ContentPlan, type ReportLogEntry, type Snapshot } from "./sim";
 import { BLOCK_NEED, DEPT_BRIEF, DEPT_LEAD } from "./staff";
 import { roomOf } from "./world";
 import { COMPANY } from "../../company.config";
@@ -41,6 +41,8 @@ export type DayReport = {
   /** 팀별 팀장 일일 상세 보고 */
   teamReports: TeamReport[];
   log: { time: string; text: string }[];
+  /** 오늘 있었던 회의/보고 전체 기록 — 몇 시에 누가 무슨 말을 했는지 (시간순) */
+  meetingLog: ReportLogEntry[];
 };
 
 /** 보고서 준비 결과 — 저장은 서버가 아니라 브라우저 다운로드로 처리합니다 */
@@ -124,6 +126,7 @@ export function buildReport(snap: Snapshot): DayReport {
     next,
     teamReports,
     log: [...snap.log].reverse().map((entry) => ({ time: entry.time, text: `${entry.icon} ${entry.text}` })),
+    meetingLog: snap.reportLog,
   };
 }
 

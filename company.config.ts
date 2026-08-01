@@ -331,3 +331,12 @@ export const PENDING_INTEGRATIONS: Record<string, string> = {
  * 예: "https://www.notion.so/내페이지주소"
  */
 export const STORAGE_LINK = "";
+
+/**
+ * 실제 배포된 GitHub 저장소 정보.
+ * "내아이디/maillard-ai-office" 형태로 적어주세요.
+ * 여기 채워두면 "실제 원고 생성" 버튼이 그 저장소의 Actions 실행 화면으로 안내해줘요.
+ * 비워두면 안내 문구만 뜨고 링크 버튼은 숨겨집니다.
+ */
+export const GITHUB_REPO = "";
+

@@ -7,25 +7,37 @@
 //
 // 이 사이트는 정적 사이트라 서버가 없어서, API 키는 브라우저(이 탭) 메모리에만 있다가
 // 새로고침하면 사라집니다. 개인 도구로만 쓰세요 (자세한 내용은 aiWriter.ts 상단 설명 참고).
+//
+// ⚠️ NVIDIA API는 브라우저에서 직접 호출하면 CORS로 막혀서 "Failed to fetch"가 납니다.
+// 그래서 CHAT_COMPLETIONS_URL(aiProxy.ts에 정의)을 거쳐서 호출해요.
+// 설정 방법은 src/game/aiProxy.ts 파일 상단 주석을 꼭 읽어주세요.
 
-const API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
+import { CHAT_COMPLETIONS_URL, explainFetchFailure, isProxyConfigured, proxyNotConfiguredError } from "./aiProxy";
+
 const MODEL = "meta/llama-3.3-70b-instruct";
 
 async function callModel(apiKey: string, prompt: string, temperature = 0.7): Promise<string> {
-  const response = await fetch(API_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      authorization: `Bearer ${apiKey.trim()}`,
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 1500,
-      temperature,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
+  if (!isProxyConfigured()) throw proxyNotConfiguredError();
+
+  let response: Response;
+  try {
+    response = await fetch(CHAT_COMPLETIONS_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        authorization: `Bearer ${apiKey.trim()}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 1500,
+        temperature,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+  } catch {
+    throw explainFetchFailure();
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");

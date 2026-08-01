@@ -40,9 +40,9 @@ jobs:
         with:
           node-version: 22
 
-      - name: 원고 생성 (Claude API 호출)
+      - name: 원고 생성 (NVIDIA NIM 호출)
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           CONTENT_TITLE: ${{ github.event.inputs.title }}
           CONTENT_KEYWORD: ${{ github.event.inputs.keyword }}
           CONTENT_ANGLE: ${{ github.event.inputs.angle }}

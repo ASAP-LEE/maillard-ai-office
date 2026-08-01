@@ -4,8 +4,8 @@
 만들 수 있게 따로 준비한 버전이에요. (학교·PC방처럼 클라우드플레어가 막혀 있어도 됩니다!)
 
 > ⚠️ 이 버전은 화면 시뮬레이션 + **실제 AI 원고 생성** 기능이 있어요.
-> 대표가 콘텐츠를 승인하면 뜨는 "✍️ ai.writer" 패널에 자기 Anthropic API 키를 넣으면,
-> 그 자리에서 실제 Claude API가 호출되어 진짜 레시피 원고가 만들어지고 .md로 다운로드할 수 있어요.
+> 대표가 콘텐츠를 승인하면 뜨는 "✍️ ai.writer" 패널에 자기 NVIDIA API 키(무료)를 넣으면,
+> 그 자리에서 실제 NVIDIA NIM이 호출되어 진짜 레시피 원고가 만들어지고 .md로 다운로드할 수 있어요.
 > (키는 저장되지 않고 이 탭이 열려 있는 동안만 메모리에 있어요 — 새로고침하면 사라져요.
 > 그래서 이 기능은 "나만 쓰는 개인 도구"로만 써야 해요. 여러 사람이 쓰는 공개 서비스로 그대로
 > 올리면 방문자가 개발자 도구로 내 API 키를 볼 수 있어서 위험해요.)
@@ -99,19 +99,24 @@ git push -u origin main
 ## 🤖 매일 자동으로 실제 원고 쌓기 (GitHub Actions)
 
 화면 시뮬레이션과는 별개로, **진짜로 매일 자동 실행되는 파이프라인**을 추가했어요.
-사용자가 창을 안 열고 있어도 GitHub가 알아서 깨워서 실행해줍니다. (완전 무료)
+사용자가 창을 안 열고 있어도 GitHub가 알아서 깨워서 실행해줍니다.
+AI 호출은 **NVIDIA NIM(build.nvidia.com) 무료 티어**를 써서 완전 무료로 돌아가요.
 
 ### 설정 방법
 
-1. 저장소 **Settings → Secrets and variables → Actions → New repository secret**
-   - Name: `ANTHROPIC_API_KEY`
-   - Value: 내 Anthropic API 키 (console.anthropic.com에서 발급)
-2. `company.config.ts`에서 `GITHUB_REPO`를 `"내아이디/maillard-ai-office"` 형태로 채우기
+1. **build.nvidia.com** 접속 → 로그인 → API 키 발급 (`nvapi-`로 시작하는 키, 무료)
+2. 저장소 **Settings → Secrets and variables → Actions → New repository secret**
+   - Name: `NVIDIA_API_KEY`
+   - Value: 방금 발급받은 `nvapi-...` 키
+3. `company.config.ts`에서 `GITHUB_REPO`를 `"내아이디/maillard-ai-office"` 형태로 채우기
    (화면의 "GitHub Actions에서 실제 생성 실행하기" 버튼이 여기로 연결돼요)
-3. 저장소 **Actions** 탭 → **AI 원고 생성** 워크플로 → **Run workflow**로 수동 테스트
+4. 저장소 **Actions** 탭 → **AI 원고 생성** 워크플로 → **Run workflow**로 수동 테스트
    - 원한다면 제목·키워드·기획 의도·실행계획을 직접 입력해서 실행할 수 있어요
    - 아무것도 안 넣으면 기본값("고기 굽는 온도 가이드")으로 생성돼요
-4. 잘 되면 이후엔 **매일 자동으로**(cron 스케줄, UTC 00:00 = 한국시간 오전 9시) 실행돼요
+5. 잘 되면 이후엔 **매일 자동으로**(cron 스케줄, UTC 00:00 = 한국시간 오전 9시) 실행돼요
+
+> ⚠️ 무료 티어 특성상 사용량이 많으면(미국 낮 시간대 등) 응답이 느리거나 실패할 수 있어요.
+> 그럴 땐 Actions 탭에서 실패한 워크플로를 다시 실행(Re-run)하면 대부분 해결돼요.
 
 ### 어떻게 연결되나
 
@@ -125,7 +130,11 @@ git push -u origin main
 
 - 스크립트: `scripts/generate-content.mjs`
 - 워크플로: `.github/workflows/generate-content.yml`
+- 모델: `meta/llama-3.3-70b-instruct` (NVIDIA NIM, 필요하면 스크립트 상단 `MODEL` 값을
+  build.nvidia.com/models 에 있는 다른 모델로 바꿀 수 있어요)
 - API 키는 GitHub Secrets에만 있고, 코드나 사이트 어디에도 노출되지 않아요.
+- ⚠️ **API 키는 절대 채팅창이나 공개된 곳에 붙여넣지 마세요.** 실수로 노출했다면
+  build.nvidia.com에서 즉시 그 키를 폐기하고 새로 발급받으세요.
 
 ---
 

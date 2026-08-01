@@ -1,24 +1,29 @@
 // src/game/auditStore.ts
-import { AuditLogEntry } from './agentPipeline';
+import { AuditLogEntry } from "./agentPipeline";
 
-export class AuditStore {
-  private logs: AuditLogEntry[] = [];
+let auditEntries: AuditLogEntry[] = [];
+let idCounter = 0;
+type Subscriber = () => void;
+const subscribers: Subscriber[] = [];
 
-  public addLog(entry: AuditLogEntry): void {
-    this.logs.push(entry);
-  }
-
-  public getLogs(): AuditLogEntry[] {
-    return [...this.logs];
-  }
-
-  public clearLogs(): void {
-    this.logs = [];
-  }
-  
-  public getLogById(id: string): AuditLogEntry | undefined {
-    return this.logs.find(log => log.id === id);
-  }
+export function nextAuditId(): string {
+  idCounter++;
+  return `audit_${Date.now()}_${idCounter}`;
 }
 
-export const auditStore = new AuditStore();
+export function addAuditEntry(entry: AuditLogEntry): void {
+  auditEntries.push(entry);
+  subscribers.forEach((sub) => sub());
+}
+
+export function getAuditEntries(): AuditLogEntry[] {
+  return [...auditEntries];
+}
+
+export function subscribeAudit(callback: Subscriber): () => void {
+  subscribers.push(callback);
+  return () => {
+    const idx = subscribers.indexOf(callback);
+    if (idx > -1) subscribers.splice(idx, 1);
+  };
+}

@@ -4,12 +4,14 @@ import OfficeWorld from "./game/OfficeWorld";
 import { generateRecipeDraft, type WriterResult } from "./game/aiWriter";
 import {
   auditStage,
+  deptDailyReport,
   planContent,
   reviewDraft,
   writeDraft,
   AUDIT_RULES,
   type AuditLogEntry,
   type ContentProposal,
+  type DeptDailyReport,
   type ReviewResult,
 } from "./game/agentPipeline";
 import { addAuditEntry, getAuditEntries, nextAuditId, subscribeAudit } from "./game/auditStore";
@@ -405,7 +407,10 @@ export default function Home() {
         ) : view === "articles" ? (
           <ArticlesView />
         ) : (
-          <AutonomousTeamPipeline engine={engine} />
+          <>
+            <DeptApprovalPipeline engine={engine} />
+            <AutonomousTeamPipeline engine={engine} />
+          </>
         )}
 
         <footer>
@@ -471,6 +476,217 @@ const INITIAL_PIPELINE_STATE: PipelineState = {
   instruction: "",
   retryCount: 0,
 };
+
+/**
+ * 12개 부서 전체를 순서대로 도는 "오늘 할 일" 승인 파이프라인.
+ * 부서 차례가 되면 팀장이 실제 NVIDIA NIM을 호출해서 오늘 할 일을 스스로 정해 보고하고,
+ * 대표가 승인하면 다음 부서로 넘어가고, 미승인하면 지시를 받아서 같은 팀장이 다시 보고한다.
+ */
+type DeptApprovalState = {
+  deptIndex: number;
+  report: DeptDailyReport | null;
+  busy: boolean;
+  error: string;
+  showInstructionBox: boolean;
+  instruction: string;
+  approvedCount: number;
+};
+
+const INITIAL_DEPT_APPROVAL_STATE: DeptApprovalState = {
+  deptIndex: 0,
+  report: null,
+  busy: false,
+  error: "",
+  showInstructionBox: false,
+  instruction: "",
+  approvedCount: 0,
+};
+
+function DeptApprovalPipeline({ engine }: { engine: Company }) {
+  const [apiKey, setApiKey] = useState("");
+  const [showKeyField, setShowKeyField] = useState(true);
+  const [state, setState] = useState<DeptApprovalState>(INITIAL_DEPT_APPROVAL_STATE);
+  const [history, setHistory] = useState<{ dept: string; summary: string }[]>([]);
+
+  const depts = DEPT_ROOMS; // company.config.ts DEPARTMENTS 순서 그대로
+  const currentDept = depts[state.deptIndex] ?? null;
+  const lead = currentDept ? DEPT_LEAD[currentDept.id] : null;
+  const done = state.deptIndex >= depts.length;
+
+  const requestReport = useCallback(
+    async (deptId: string, instruction?: string) => {
+      const dept = depts.find((d) => d.id === deptId);
+      const deptLead = DEPT_LEAD[deptId];
+      if (!dept || !deptLead) return;
+      if (!apiKey.trim()) {
+        setShowKeyField(true);
+        setState((s) => ({ ...s, error: "먼저 API 키를 입력해주세요." }));
+        return;
+      }
+      setState((s) => ({ ...s, busy: true, error: "", showInstructionBox: false }));
+      try {
+        const report = await deptDailyReport(apiKey, {
+          deptName: dept.name,
+          leadName: deptLead.name,
+          task: DEPT_BRIEF[deptId]?.task ?? dept.name,
+          instruction,
+        });
+        setState((s) => ({ ...s, busy: false, report }));
+        engine.reportToCEO(
+          deptId,
+          `대표님, 오늘 할 일 보고드릴게요.\n"${report.summary}" — ${report.reason}`,
+          "briefing",
+        );
+      } catch (err) {
+        setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
+      }
+    },
+    [apiKey, depts, engine],
+  );
+
+  const handleStart = useCallback(() => {
+    setState(INITIAL_DEPT_APPROVAL_STATE);
+    setHistory([]);
+    void requestReport(depts[0].id);
+  }, [requestReport, depts]);
+
+  const handleApprove = useCallback(() => {
+    if (!currentDept || !state.report) return;
+    engine.reportToCEO(currentDept.id, "승인 감사합니다! 오늘 계획대로 진행할게요.", "approved");
+    setHistory((prev) => [...prev, { dept: currentDept.name, summary: state.report!.summary }]);
+    const nextIndex = state.deptIndex + 1;
+    setState((s) => ({ ...INITIAL_DEPT_APPROVAL_STATE, deptIndex: nextIndex, approvedCount: s.approvedCount + 1 }));
+    const nextDept = depts[nextIndex];
+    if (nextDept) void requestReport(nextDept.id);
+  }, [currentDept, state.report, state.deptIndex, depts, requestReport, engine]);
+
+  const handleReject = useCallback(() => {
+    setState((s) => ({ ...s, showInstructionBox: true }));
+  }, []);
+
+  const handleSendInstruction = useCallback(() => {
+    if (!currentDept) return;
+    const instructionText = state.instruction.trim();
+    engine.reportToCEO(
+      currentDept.id,
+      instructionText ? `네, "${instructionText}" 반영해서 다시 계획 짜볼게요.` : "네, 다시 계획 짜볼게요.",
+      "instruction",
+    );
+    void requestReport(currentDept.id, state.instruction || undefined);
+    setState((s) => ({ ...s, instruction: "" }));
+  }, [currentDept, state.instruction, requestReport, engine]);
+
+  return (
+    <section className="win rail-card" style={{ margin: "24px 0" }}>
+      <div className="win-bar">
+        <span>🏢 all.depts.approval (12개 부서 순차 승인)</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className="win-body" style={{ padding: 16 }}>
+        <p style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>
+          12개 부서 팀장이 순서대로 와서 오늘 할 일을 실제로 보고해요. 승인하면 다음 팀으로 넘어가고,
+          미승인하면 지시를 내려서 같은 팀장이 다시 보고받을 수 있어요.
+        </p>
+
+        {showKeyField || !apiKey ? (
+          <div style={{ marginBottom: 12 }}>
+            <input
+              type="password"
+              placeholder="nvapi-... (NVIDIA API 키)"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #ccc", marginBottom: 4 }}
+            />
+            <p style={{ fontSize: 11, opacity: 0.7 }}>
+              키는 저장되지 않고 이 탭 메모리에서만 쓰여요. build.nvidia.com에서 무료로 발급받을 수 있어요.
+            </p>
+          </div>
+        ) : (
+          <button className="text-button" style={{ marginBottom: 8 }} onClick={() => setShowKeyField(true)}>
+            API 키 변경
+          </button>
+        )}
+
+        {!currentDept && !done ? null : null}
+
+        {state.deptIndex === 0 && !state.report && !state.busy && !done ? (
+          <button className="btn approve-button" onClick={handleStart}>
+            전사 보고 시작하기 (1번 부서부터)
+          </button>
+        ) : null}
+
+        {state.busy ? (
+          <p style={{ fontSize: 13 }}>⏳ {lead?.name ?? "팀장"}이 오늘 할 일을 정리하는 중...</p>
+        ) : null}
+
+        {state.error ? (
+          <p style={{ color: "#c0392b", fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap" }}>{state.error}</p>
+        ) : null}
+
+        {currentDept && state.report && !state.busy ? (
+          <div className="report-card" style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.03)", borderRadius: 8 }}>
+            <p style={{ fontWeight: 600, marginBottom: 4 }}>
+              📋 {currentDept.name} {lead?.name} 팀장 보고
+              <span className="mini-badge mint" style={{ marginLeft: 8, fontSize: 11 }}>
+                {state.deptIndex + 1} / {depts.length}
+              </span>
+            </p>
+            <p style={{ fontSize: 13, marginBottom: 8, opacity: 0.85 }}>{state.report.reason}</p>
+            <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+              <div><b>오늘 할 일</b>: {state.report.summary}</div>
+              <div style={{ marginTop: 4 }}><b>실행 계획</b>:</div>
+              <ul style={{ margin: "4px 0 0 18px" }}>
+                {state.report.steps.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ul>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button className="btn approve-button" onClick={handleApprove}>
+                ✅ 승인
+              </button>
+              <button className="btn btn-ghost" onClick={handleReject}>
+                ❌ 미승인
+              </button>
+            </div>
+            {state.showInstructionBox ? (
+              <div style={{ marginTop: 10 }}>
+                <textarea
+                  placeholder="예: 이 부분은 이렇게 바꿔서 다시 계획해주세요"
+                  value={state.instruction}
+                  onChange={(e) => setState((s) => ({ ...s, instruction: e.target.value }))}
+                  style={{ width: "100%", minHeight: 60, padding: 8, borderRadius: 6, border: "1px solid #ccc", fontSize: 13 }}
+                />
+                <button className="btn approve-button" style={{ marginTop: 6 }} onClick={handleSendInstruction}>
+                  지시 전달하고 다시 보고받기
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {done ? (
+          <p style={{ fontSize: 14, fontWeight: 600, marginTop: 12 }}>
+            🎉 오늘 12개 부서 보고를 전부 승인했어요! 수고하셨어요.
+          </p>
+        ) : null}
+
+        {history.length > 0 ? (
+          <div style={{ marginTop: 16, borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: 10 }}>
+            <p style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>✅ 오늘 승인된 부서 ({history.length}/{depts.length})</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {history.map((h, i) => (
+                <div key={i} style={{ fontSize: 12, opacity: 0.85 }}>
+                  · {h.dept}: {h.summary}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
 
 function AutonomousTeamPipeline({ engine }: { engine: Company }) {
   const [apiKey, setApiKey] = useState("");

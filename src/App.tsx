@@ -3,6 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import OfficeWorld from "./game/OfficeWorld";
 import { generateRecipeDraft, type WriterResult } from "./game/aiWriter";
 import {
+  planContent,
+  reviewDraft,
+  writeDraft,
+  type ContentProposal,
+  type ReviewResult,
+} from "./game/agentPipeline";
+import {
   buildReport,
   fetchIntegrations,
   publish,
@@ -15,7 +22,7 @@ import { CEO, DEPT_BRIEF, DEPT_LEAD, STAFF } from "./game/staff";
 import { DEPT_ROOMS } from "./game/world";
 import { COMPANY, GITHUB_REPO, STORAGE_LINK } from "../company.config";
 
-type View = "live" | "dashboard" | "articles";
+type View = "live" | "dashboard" | "articles" | "company";
 
 /** DayReport를 사람이 읽기 좋은 텍스트로 바꾼다 */
 function reportToText(report: DayReport): string {
@@ -341,6 +348,9 @@ export default function Home() {
             <button className={view === "articles" ? "active" : ""} onClick={() => setView("articles")}>
               📰 실제 발행된 원고
             </button>
+            <button className={view === "company" ? "active" : ""} onClick={() => setView("company")}>
+              🏢 실시간 진짜 회사
+            </button>
             <button
               className={`todo-tab ${todo ? "urgent" : ""}`}
               onClick={() => {
@@ -388,8 +398,10 @@ export default function Home() {
             integrations={integrations}
             publishResult={publishState.result}
           />
-        ) : (
+        ) : view === "articles" ? (
           <ArticlesView />
+        ) : (
+          <AutonomousTeamPipeline />
         )}
 
         <footer>
@@ -425,6 +437,283 @@ export default function Home() {
  * 이 사이트는 서버가 없는 정적 사이트라, API 키는 이 탭이 열려 있는 동안만
  * 메모리(React state)에 있다가 새로고침하면 사라집니다. 어디에도 저장되지 않아요.
  */
+/**
+ * 팀장이 실제로 와서(실시간 AI 호출) 오늘 할 일을 보고하고,
+ * 대표가 승인하면 다음 단계로, 미승인하면 지시를 받아서 다시 보고하는 파이프라인.
+ * 기획팀 → 원고팀 → 검수팀 순서로 진행되고, 검수팀이 반려하면 원고팀이 다시 씀.
+ */
+type PipelineStage = "briefing" | "working" | "reviewing" | "done";
+
+type PipelineState = {
+  stage: PipelineStage;
+  proposal: ContentProposal | null;
+  draft: string | null;
+  review: ReviewResult | null;
+  busy: boolean;
+  error: string;
+  showInstructionBox: boolean;
+  instruction: string;
+  retryCount: number;
+};
+
+const INITIAL_PIPELINE_STATE: PipelineState = {
+  stage: "briefing",
+  proposal: null,
+  draft: null,
+  review: null,
+  busy: false,
+  error: "",
+  showInstructionBox: false,
+  instruction: "",
+  retryCount: 0,
+};
+
+function AutonomousTeamPipeline() {
+  const [apiKey, setApiKey] = useState("");
+  const [showKeyField, setShowKeyField] = useState(true);
+  const [state, setState] = useState<PipelineState>(INITIAL_PIPELINE_STATE);
+  const [publishedTitles, setPublishedTitles] = useState<string[]>([]);
+  const [finalDrafts, setFinalDrafts] = useState<{ title: string; markdown: string }[]>([]);
+
+  const requestPlan = useCallback(
+    async (instruction?: string) => {
+      if (!apiKey.trim()) {
+        setShowKeyField(true);
+        setState((s) => ({ ...s, error: "먼저 API 키를 입력해주세요." }));
+        return;
+      }
+      setState((s) => ({ ...s, busy: true, error: "", showInstructionBox: false }));
+      try {
+        const proposal = await planContent(apiKey, {
+          deptName: DEPT_LEAD["strategy1"]?.role ?? "키워드 기획팀",
+          leadName: DEPT_LEAD["strategy1"]?.name ?? "기획 팀장",
+          recentTitles: [...publishedTitles, ...finalDrafts.map((d) => d.title)],
+          instruction,
+        });
+        setState((s) => ({ ...s, busy: false, proposal, stage: "briefing" }));
+      } catch (err) {
+        setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
+      }
+    },
+    [apiKey, publishedTitles, finalDrafts],
+  );
+
+  const requestReview = useCallback(
+    async (markdown: string, keyword: string) => {
+      setState((s) => ({ ...s, busy: true, error: "" }));
+      try {
+        const review = await reviewDraft(apiKey, markdown, {
+          leadName: DEPT_LEAD["qa"]?.name ?? "검수 팀장",
+          keyword,
+        });
+        setState((s) => ({ ...s, busy: false, review }));
+      } catch (err) {
+        setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
+      }
+    },
+    [apiKey],
+  );
+
+  const requestWrite = useCallback(
+    async (feedback?: string) => {
+      if (!state.proposal) return;
+      setState((s) => ({ ...s, busy: true, error: "", stage: "working" }));
+      try {
+        const draft = await writeDraft(apiKey, state.proposal, {
+          leadName: DEPT_LEAD["strategy2"]?.name ?? "원고 팀장",
+          feedback,
+        });
+        setState((s) => ({ ...s, busy: false, draft, stage: "reviewing" }));
+        // 작성이 끝나면 곧바로 검수 AI를 호출
+        void requestReview(draft, state.proposal.keyword);
+      } catch (err) {
+        setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
+      }
+    },
+    [apiKey, state.proposal, requestReview],
+  );
+
+  const handleApprove = useCallback(() => {
+    if (state.stage === "briefing" && state.proposal) {
+      void requestWrite(undefined);
+    }
+  }, [state.stage, state.proposal, requestWrite]);
+
+  const handleReviewOutcome = useCallback(() => {
+    if (!state.review) return;
+    if (state.review.passed && state.draft && state.proposal) {
+      setFinalDrafts((prev) => [...prev, { title: state.proposal!.title, markdown: state.draft! }]);
+      setPublishedTitles((prev) => [...prev, state.proposal!.title]);
+      setState(INITIAL_PIPELINE_STATE);
+    } else if (state.retryCount < 2) {
+      // 반려 → 원고팀이 피드백 받아서 재작성
+      const feedback = state.review.feedback;
+      setState((s) => ({ ...s, retryCount: s.retryCount + 1, review: null, draft: null }));
+      void requestWrite(feedback);
+    } else {
+      setState((s) => ({ ...s, error: "재작성 2회 시도 후에도 통과하지 못했어요. 기획을 바꿔서 다시 시작해주세요." }));
+    }
+  }, [state.review, state.draft, state.proposal, state.retryCount, requestWrite]);
+
+  const handleReject = useCallback(() => {
+    setState((s) => ({ ...s, showInstructionBox: true }));
+  }, []);
+
+  const handleSendInstruction = useCallback(() => {
+    void requestPlan(state.instruction || undefined);
+    setState((s) => ({ ...s, instruction: "" }));
+  }, [requestPlan, state.instruction]);
+
+  const handleStart = useCallback(() => {
+    setState(INITIAL_PIPELINE_STATE);
+    void requestPlan();
+  }, [requestPlan]);
+
+  const planLeadName = DEPT_LEAD["strategy1"]?.name ?? "기획 팀장";
+  const planDeptTitle = "키워드 기획팀";
+
+  return (
+    <section className="win rail-card" style={{ margin: "24px 0" }}>
+      <div className="win-bar">
+        <span>🏢 real.company (실시간 팀장 보고)</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className="win-body" style={{ padding: 16 }}>
+        <p style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>
+          팀장 AI가 실시간으로 와서 오늘 할 일을 보고해요. 승인하면 그대로 진행되고,
+          미승인하면 지시를 내려서 다시 보고받을 수 있어요.
+        </p>
+
+        {showKeyField || !apiKey ? (
+          <div style={{ marginBottom: 12 }}>
+            <input
+              type="password"
+              placeholder="nvapi-... (NVIDIA API 키)"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #ccc", marginBottom: 4 }}
+            />
+            <p style={{ fontSize: 11, opacity: 0.7 }}>
+              키는 저장되지 않고 이 탭 메모리에서만 쓰여요. build.nvidia.com에서 무료로 발급받을 수 있어요.
+            </p>
+          </div>
+        ) : (
+          <button className="text-button" style={{ marginBottom: 8 }} onClick={() => setShowKeyField(true)}>
+            API 키 변경
+          </button>
+        )}
+
+        {state.stage === "briefing" && !state.proposal && !state.busy ? (
+          <button className="btn approve-button" onClick={handleStart}>
+            오늘 업무 시작하기
+          </button>
+        ) : null}
+
+        {state.busy ? <p style={{ fontSize: 13 }}>⏳ {leadNameForStage(state)} 작업 중...</p> : null}
+
+        {state.error ? (
+          <p style={{ color: "#c0392b", fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap" }}>{state.error}</p>
+        ) : null}
+
+        {/* 1) 기획 보고 */}
+        {state.proposal && state.stage === "briefing" && !state.busy ? (
+          <div className="report-card" style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.03)", borderRadius: 8 }}>
+            <p style={{ fontWeight: 600, marginBottom: 4 }}>
+              📋 {planDeptTitle} {planLeadName} 팀장 보고
+            </p>
+            <p style={{ fontSize: 13, marginBottom: 8, opacity: 0.85 }}>{state.proposal.reason}</p>
+            <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+              <div><b>제목</b>: {state.proposal.title}</div>
+              <div><b>키워드</b>: {state.proposal.keyword}</div>
+              <div><b>기획 의도</b>: {state.proposal.angle}</div>
+              <div style={{ marginTop: 4 }}><b>실행 계획</b>:</div>
+              <ul style={{ margin: "4px 0 0 18px" }}>
+                {state.proposal.steps.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ul>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button className="btn approve-button" onClick={handleApprove}>
+                ✅ 승인
+              </button>
+              <button className="btn btn-ghost" onClick={handleReject}>
+                ❌ 미승인
+              </button>
+            </div>
+            {state.showInstructionBox ? (
+              <div style={{ marginTop: 10 }}>
+                <textarea
+                  placeholder="예: 이 주제 말고 다른 부위로, 더 캐주얼한 톤으로 등"
+                  value={state.instruction}
+                  onChange={(e) => setState((s) => ({ ...s, instruction: e.target.value }))}
+                  style={{ width: "100%", minHeight: 60, padding: 8, borderRadius: 6, border: "1px solid #ccc", fontSize: 13 }}
+                />
+                <button className="btn approve-button" style={{ marginTop: 6 }} onClick={handleSendInstruction}>
+                  지시 전달하고 다시 보고받기
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* 2) 작성 중 */}
+        {state.stage === "working" && state.busy ? (
+          <p style={{ fontSize: 13, marginTop: 8 }}>
+            ✍️ {DEPT_LEAD["strategy2"]?.name ?? "원고 팀장"}이 원고를 쓰고 있어요...
+          </p>
+        ) : null}
+
+        {/* 3) 검수 결과 */}
+        {state.stage === "reviewing" && state.review && !state.busy ? (
+          <div className="report-card" style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.03)", borderRadius: 8 }}>
+            <p style={{ fontWeight: 600, marginBottom: 4 }}>
+              🔍 {DEPT_LEAD["qa"]?.name ?? "검수 팀장"} 검수 결과: {state.review.passed ? "✅ 통과" : "❌ 반려"}
+            </p>
+            <p style={{ fontSize: 13, opacity: 0.85 }}>{state.review.feedback}</p>
+            {!state.review.passed && state.retryCount >= 2 ? null : (
+              <button className="btn approve-button" style={{ marginTop: 8 }} onClick={handleReviewOutcome}>
+                {state.review.passed ? "원고 확정하고 다음 팀으로" : "피드백 반영해서 재작성 요청"}
+              </button>
+            )}
+          </div>
+        ) : null}
+
+        {/* 완료된 원고 목록 */}
+        {finalDrafts.length > 0 ? (
+          <div style={{ marginTop: 16, borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: 10 }}>
+            <p style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>✅ 오늘 확정된 원고</p>
+            {finalDrafts.map((d, i) => (
+              <details key={i} style={{ marginBottom: 6 }}>
+                <summary style={{ fontSize: 13, cursor: "pointer" }}>{d.title}</summary>
+                <pre
+                  style={{
+                    maxHeight: 220,
+                    overflow: "auto",
+                    whiteSpace: "pre-wrap",
+                    fontSize: 12,
+                    background: "rgba(0,0,0,0.04)",
+                    padding: 8,
+                    borderRadius: 6,
+                  }}
+                >
+                  {d.markdown}
+                </pre>
+              </details>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function leadNameForStage(state: PipelineState): string {
+  if (state.stage === "briefing") return DEPT_LEAD["strategy1"]?.name ?? "기획 팀장";
+  if (state.stage === "working") return DEPT_LEAD["strategy2"]?.name ?? "원고 팀장";
+  return DEPT_LEAD["qa"]?.name ?? "검수 팀장";
+}
+
 function AiWriterPanel({ plan }: { plan: import("./game/sim").ContentPlan }) {
   const [apiKey, setApiKey] = useState("");
   const [showKeyField, setShowKeyField] = useState(false);

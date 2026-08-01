@@ -128,13 +128,13 @@ export const DEPARTMENTS = [
   },
   {
     id: "partner",
-    name: "제휴·광고팀",
-    short: "partner.mail",
-    icon: "💌",
-    task: "애드센스·협업 문의 검토",
-    report: "초안까지만 씁니다. 발송은 대표가 해요.",
-    tomorrow: "메일 연동이 되면 바로 대기 중인 제휴 문의를 확인하고 답장 초안을 준비해요. 연동 전까지는 문의 유형을 정리해둘게요.",
-    improve: "자주 오는 문의 유형별 답변 템플릿을 미리 만들어두면 연동 즉시 처리 속도가 빨라져요.",
+    name: "감사팀",
+    short: "audit.desk",
+    icon: "🕵️",
+    task: "기획·작성·검수 단계별 실시간 감사",
+    report: "각 단계 결과물이 회사 규칙을 지켰는지 하나씩 확인해요.",
+    tomorrow: "오늘 반려된 항목의 재발 여부를 우선 확인하고, 감사 규칙에 빠진 케이스가 있으면 보완해요.",
+    improve: "감사 기준을 더 촘촘히 나눠서, 통과/반려 판정 사유를 팀별로 더 구체적으로 남길게요.",
   },
   {
     id: "finance",
@@ -272,13 +272,13 @@ export const STAFF_LIST: StaffEntry[] = [
     colors: ["#274a44", "#fff3b0", "#b8f0dd"],
     thoughts: ["대표 이미지에 조리시간 빠지면 반려예요.", "보정본에만 손댑니다."] },
 
-  // ⑧ 제휴·광고팀
-  { dept: "partner", rank: "lead", name: "정파랑", role: "제휴 팀장", callsign: "정파트",
+  // ⑧ 감사팀
+  { dept: "partner", rank: "lead", name: "정파랑", role: "감사 팀장", callsign: "정감사",
     colors: ["#563a32", "#b8f0dd", "#b8f0dd"],
-    thoughts: ["메일 연동 전이라 아직 못 읽어요.", "실제 발송은 대표 손으로."] },
-  { dept: "partner", rank: "member", name: "구예성", role: "협업 검토",
+    thoughts: ["기획·작성·검수, 세 단계 다 확인해야 해요.", "규칙에 없는 예외는 만들지 않아요."] },
+  { dept: "partner", rank: "member", name: "구예성", role: "감사 기록 관리",
     colors: ["#452d3f", "#c9b8ff", "#fff3b0"],
-    thoughts: ["결이 맞는 식품·주방용품 제안만 받습니다.", "답장 초안까지만 준비해둘게요."] },
+    thoughts: ["통과든 반려든 사유는 다 남깁니다.", "같은 문제가 반복되는지부터 봐요."] },
 
   // ⑨ 광고수익팀
   { dept: "finance", rank: "lead", name: "오재민", role: "광고수익 팀장", callsign: "오재무",
@@ -322,7 +322,6 @@ export const STAFF_LIST: StaffEntry[] = [
  */
 export const PENDING_INTEGRATIONS: Record<string, string> = {
   brand: "검색콘솔 지표 연동",
-  partner: "메일 연동",
   finance: "애드센스 현황 파일",
 };
 

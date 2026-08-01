@@ -151,12 +151,11 @@ const PHASES = [
   "업무 종료",
 ];
 
-const BLOCKED_DEPTS = new Set(["brand", "partner", "finance"]);
+const BLOCKED_DEPTS = new Set(["brand", "finance"]);
 
 /** 연동 대기 부서가 멈춰 있는 진짜 이유 (+ 해결 방법) */
 export const BLOCK_REASON: Record<string, string> = {
   brand: "Instagram 계정이 아직 연동 전이라 지표를 읽을 수 없어요. 없는 숫자를 만들지는 않습니다. 연동만 되면 바로 돌려요.",
-  partner: "Gmail 연동 전이라 협업 메일을 못 읽어요. 연결되면 답장 초안까지 준비해둡니다.",
   finance: "재무 현황 파일이 아직 안 왔어요. 대표님이 파일만 주시면 그날 안에 정리합니다.",
 };
 
@@ -169,7 +168,7 @@ const DEPT_KEYWORDS: [string, string[]][] = [
   ["research", ["시장조사", "리서치", "조사팀", "뉴스", "김서연"]],
   ["reels", ["릴스", "영상", "편집", "송리원"]],
   ["carousel", ["캐러셀", "카드뉴스", "canva", "칸바", "이가림"]],
-  ["partner", ["파트너", "협찬", "광고 제안", "메일", "정파랑"]],
+  ["partner", ["감사", "감사팀", "정파랑", "audit"]],
   ["finance", ["재무", "정산", "입금", "돈", "오재민"]],
   ["review", ["성과", "리뷰", "지표", "강성아"]],
   ["ops", ["자동화", "운영팀", "스케줄", "안도현"]],
@@ -411,7 +410,7 @@ export class Company {
     this.goto(bora, rand(LOUNGE_ROOM.loiter), "휴식");
     this.enqueue(bora, { k: "wait", dur: 4 }, { k: "fn", fn: () => this.say(bora, "연결되면 바로 돌립니다.", 2.4) });
     this.sitAtDesk(bora);
-    this.pushLog("💌", "파트너십·재무팀: Gmail·재무 파일 연동 전이라 오늘은 대기합니다.", "lav");
+    this.pushLog("🕵️", "감사팀: 오늘 진행되는 기획·작성·검수 단계를 실시간으로 확인합니다.", "lav");
 
     // ④ 회의 1 — 시장조사 → 전략1 → QA 인수인계
     yield* this.meeting(

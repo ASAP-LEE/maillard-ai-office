@@ -421,7 +421,7 @@ export default function Home() {
 }
 
 /**
- * 원고 작성팀이 "실제로" Claude API를 호출해서 진짜 레시피 원고를 쓰는 패널.
+ * 원고 작성팀이 "실제로" NVIDIA NIM(build.nvidia.com 무료 티어)을 호출해서 진짜 레시피 원고를 쓰는 패널.
  * 이 사이트는 서버가 없는 정적 사이트라, API 키는 이 탭이 열려 있는 동안만
  * 메모리(React state)에 있다가 새로고침하면 사라집니다. 어디에도 저장되지 않아요.
  */
@@ -469,7 +469,7 @@ function AiWriterPanel({ plan }: { plan: import("./game/sim").ContentPlan }) {
       </div>
       <div className="win-body approval-body">
         <p style={{ marginBottom: 8 }}>
-          이 승인된 기획안으로 <b>실제 Claude API</b>를 호출해서 진짜 원고를 만들어요.
+          이 승인된 기획안으로 <b>실제 NVIDIA NIM(무료 티어)</b>을 호출해서 진짜 원고를 만들어요.
           화면 연출이 아니라 진짜 텍스트가 생성됩니다.
         </p>
 
@@ -477,7 +477,7 @@ function AiWriterPanel({ plan }: { plan: import("./game/sim").ContentPlan }) {
           <div style={{ marginBottom: 8 }}>
             <input
               type="password"
-              placeholder="sk-ant-... (Anthropic API 키)"
+              placeholder="nvapi-... (NVIDIA API 키)"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               style={{
@@ -490,7 +490,7 @@ function AiWriterPanel({ plan }: { plan: import("./game/sim").ContentPlan }) {
             />
             <p style={{ fontSize: 11, opacity: 0.7 }}>
               키는 저장되지 않고 이 탭 메모리에서만 쓰여요. 새로고침하면 사라져요.
-              console.anthropic.com에서 발급받을 수 있어요.
+              build.nvidia.com에서 무료로 발급받을 수 있어요.
             </p>
           </div>
         ) : (
@@ -627,7 +627,7 @@ function ArticlesView() {
       </div>
       <div className="win-body" style={{ padding: 16 }}>
         <p style={{ marginBottom: 12, fontSize: 13, opacity: 0.8 }}>
-          여기 보이는 글은 화면 연출이 아니라, GitHub Actions가 실제로 Claude API를 호출해서 만든
+          여기 보이는 글은 화면 연출이 아니라, GitHub Actions가 실제로 NVIDIA NIM을 호출해서 만든
           진짜 원고예요. 매일 자동으로 쌓이거나, 저장소 Actions 탭에서 직접 실행할 수 있어요.
         </p>
 
@@ -1423,4 +1423,3 @@ function DashboardView({
     </>
   );
 }
-

@@ -96,6 +96,39 @@ git push -u origin main
 
 ---
 
+## 🤖 매일 자동으로 실제 원고 쌓기 (GitHub Actions)
+
+화면 시뮬레이션과는 별개로, **진짜로 매일 자동 실행되는 파이프라인**을 추가했어요.
+사용자가 창을 안 열고 있어도 GitHub가 알아서 깨워서 실행해줍니다. (완전 무료)
+
+### 설정 방법
+
+1. 저장소 **Settings → Secrets and variables → Actions → New repository secret**
+   - Name: `ANTHROPIC_API_KEY`
+   - Value: 내 Anthropic API 키 (console.anthropic.com에서 발급)
+2. `company.config.ts`에서 `GITHUB_REPO`를 `"내아이디/maillard-ai-office"` 형태로 채우기
+   (화면의 "GitHub Actions에서 실제 생성 실행하기" 버튼이 여기로 연결돼요)
+3. 저장소 **Actions** 탭 → **AI 원고 생성** 워크플로 → **Run workflow**로 수동 테스트
+   - 원한다면 제목·키워드·기획 의도·실행계획을 직접 입력해서 실행할 수 있어요
+   - 아무것도 안 넣으면 기본값("고기 굽는 온도 가이드")으로 생성돼요
+4. 잘 되면 이후엔 **매일 자동으로**(cron 스케줄, UTC 00:00 = 한국시간 오전 9시) 실행돼요
+
+### 어떻게 연결되나
+
+- 화면에서 "이 콘텐츠 승인하기"를 누르면 뜨는 **✍️ ai.writer** 패널에
+  GitHub Actions로 바로 이동하는 링크 + 복붙용 값(제목/키워드/앵글/단계)이 함께 떠요.
+- 워크플로가 끝나면 `public/content/` 폴더에 실제 원고(.md)가 쌓이고,
+  같은 push가 자동으로 사이트도 재배포해요(`deploy.yml`이 이어서 실행됨).
+- 쌓인 원고는 사이트의 **"📰 실제 발행된 원고"** 탭에서 목록으로 볼 수 있어요.
+
+### 참고
+
+- 스크립트: `scripts/generate-content.mjs`
+- 워크플로: `.github/workflows/generate-content.yml`
+- API 키는 GitHub Secrets에만 있고, 코드나 사이트 어디에도 노출되지 않아요.
+
+---
+
 ## ✏️ 내 회사로 바꾸기
 
 `company.config.ts` 파일 하나만 고치면 돼요. (지금은 이미 "마이야르"로 세팅돼 있어요)

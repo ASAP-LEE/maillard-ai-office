@@ -1,212 +1,1748 @@
-// 사이트 화면 안에서 실시간으로 돌아가는 "팀장 보고 → 승인/미승인 → 실제 작업" 파이프라인.
-// 3단계 AI가 순서대로 실제 NVIDIA NIM을 호출합니다:
-//   1) 기획 AI  - 오늘 무엇을 할지 스스로 판단해서 팀장 보고서를 씀
-//   2) 작성 AI  - 승인된 기획안으로 실제 원고를 씀
-//   3) 검수 AI  - 원고를 실제로 평가해서 통과/반려를 판단
-//
-// 이 사이트는 정적 사이트라 서버가 없어서, API 키는 브라우저(이 탭) 메모리에만 있다가
-// 새로고침하면 사라집니다. 개인 도구로만 쓰세요 (자세한 내용은 aiWriter.ts 상단 설명 참고).
+import type { CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import OfficeWorld from "./game/OfficeWorld";
+import { generateRecipeDraft, type WriterResult } from "./game/aiWriter";
+import {
+  planContent,
+  reviewDraft,
+  writeDraft,
+  type ContentProposal,
+  type ReviewResult,
+} from "./game/agentPipeline";
+import {
+  buildReport,
+  fetchIntegrations,
+  publish,
+  type DayReport,
+  type IntegrationStatus,
+  type PublishResult,
+} from "./game/report";
+import { Company, PHASES, type Agent, type DeptStatus, type Snapshot } from "./game/sim";
+import { CEO, DEPT_BRIEF, DEPT_LEAD, STAFF } from "./game/staff";
+import { DEPT_ROOMS } from "./game/world";
+import { COMPANY, GITHUB_REPO, STORAGE_LINK } from "../company.config";
 
-const API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
-const MODEL = "meta/llama-3.3-70b-instruct";
+type View = "live" | "dashboard" | "articles" | "company";
 
-async function callModel(apiKey: string, prompt: string, temperature = 0.7): Promise<string> {
-  const response = await fetch(API_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      authorization: `Bearer ${apiKey.trim()}`,
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 1500,
-      temperature,
-      messages: [{ role: "user", content: prompt }],
-    }),
-  });
+/** DayReport를 사람이 읽기 좋은 텍스트로 바꾼다 */
+function reportToText(report: DayReport): string {
+  const lines: string[] = [];
+  lines.push(`${report.title}`);
+  lines.push(`생성 시각: ${new Date().toLocaleString("ko-KR")}`);
+  lines.push(`현재 시각(사무실 기준): ${report.clock} · ${report.phase}`);
+  lines.push("");
+  lines.push(
+    `[진행 현황] 전체 ${report.counts.total} · 완료 ${report.counts.done} · 진행중 ${report.counts.working} · 승인대기 ${report.counts.approval} · 연동대기 ${report.counts.blocked}`,
+  );
+  lines.push("");
 
-  if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(
-      `API 호출 실패 (${response.status}). 키가 올바른지, build.nvidia.com에서 사용량이 남아있는지 확인해주세요.\n${text.slice(0, 300)}`,
-    );
+  lines.push("■ 오늘의 하이라이트");
+  lines.push(report.highlights.length ? report.highlights.map((h) => `- ${h}`).join("\n") : "- (아직 없음)");
+  lines.push("");
+
+  lines.push("■ 오늘의 콘텐츠 제안 (무엇을, 어떻게 만들지)");
+  if (report.contentProposal) {
+    const p = report.contentProposal;
+    lines.push(`- 제목: ${p.title} (채점 ${p.score}점)`);
+    lines.push(`- 타깃 키워드: ${p.keyword}`);
+    lines.push(`- 기획 의도: ${p.angle}`);
+    lines.push("- 실행 계획:");
+    lines.push(p.steps.map((s) => `  · ${s}`).join("\n"));
+  } else {
+    lines.push("- 아직 확정된 콘텐츠 제안이 없어요.");
   }
+  lines.push("");
 
-  const data = await response.json();
-  const text: string = data.choices?.[0]?.message?.content ?? "";
-  if (!text.trim()) throw new Error("응답이 비어 있어요. 다시 시도해주세요.");
-  return text;
+  lines.push("■ 결재/의사결정");
+  lines.push(report.decisions.map((d) => `- ${d}`).join("\n"));
+  lines.push("");
+
+  lines.push("■ 리스크 / 막힌 부분 (해결 방법 포함)");
+  lines.push(
+    report.risks.length
+      ? report.risks
+          .map((r) => `- ${r.team}: ${r.issue}\n  → 해결 방법: ${r.solution}`)
+          .join("\n")
+      : "- (없음)",
+  );
+  lines.push("");
+
+  lines.push("■ 다음 할 일");
+  lines.push(report.next.map((n) => `- ${n}`).join("\n"));
+  lines.push("");
+
+  lines.push("■ 팀별 팀장 일일 보고 (오늘 한 일 · 내일 계획 · 보완할 점)");
+  lines.push(
+    report.teamReports
+      .map((t) => {
+        const parts = [`- ${t.team} (팀장 ${t.lead}) · 상태: ${t.status}`, `  오늘: ${t.today}`];
+        if (t.risk) parts.push(`  리스크: ${t.risk} → 해결 방법: ${t.solution}`);
+        parts.push(`  내일 계획: ${t.tomorrow}`);
+        parts.push(`  보완할 점: ${t.improve}`);
+        return parts.join("\n");
+      })
+      .join("\n\n"),
+  );
+  lines.push("");
+
+  lines.push("■ 전체 로그");
+  lines.push(report.log.length ? report.log.map((l) => `[${l.time}] ${l.text}`).join("\n") : "- (로그 없음)");
+  lines.push("");
+
+  return lines.join("\n");
 }
 
-/** 마크다운 코드펜스나 잡설 없이 JSON만 뽑아내려는 시도 */
-function extractJson(raw: string): unknown {
-  const cleaned = raw.trim().replace(/^```json\s*|^```\s*|```$/gm, "");
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("AI 응답에서 JSON을 찾지 못했어요.");
-  return JSON.parse(cleaned.slice(start, end + 1));
+/** 문자열을 .txt 파일로 즉시 다운로드한다 (서버 없이 브라우저에서 처리) */
+function downloadTextFile(filename: string, text: string) {
+  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
-// ---------------------------------------------------------------------------
-// 1단계: 기획 AI
-// ---------------------------------------------------------------------------
+/** 마크다운 원고를 .md 파일로 다운로드한다 */
+function downloadMarkdownFile(filename: string, markdown: string) {
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
 
-export type ContentProposal = {
+const statusClass: Record<DeptStatus, string> = {
+  "완료": "done",
+  "진행 중": "working",
+  "승인 대기": "approval",
+  "연동 대기": "blocked",
+  "대기": "waiting",
+};
+
+/** 링크만 걸려 있는 항목 (서버 연동과 무관) */
+const integrations2Static = STORAGE_LINK
+  ? [{ name: "결과물 보관함", status: "링크 연결", tone: "mint", href: STORAGE_LINK }]
+  : [];
+
+function PixelEmployee({ hair, shirt, accent }: { hair: string; shirt: string; accent: string }) {
+  const style = {
+    "--pixel-hair": hair,
+    "--pixel-shirt": shirt,
+    "--pixel-accent": accent,
+  } as CSSProperties;
+  return (
+    <span className="pixel-employee" style={style} aria-hidden="true">
+      <i className="pixel-shadow" />
+      <i className="pixel-legs" />
+      <i className="pixel-body" />
+      <i className="pixel-arm left" />
+      <i className="pixel-arm right" />
+      <i className="pixel-face">
+        <b className="pixel-eyes" />
+      </i>
+      <i className="pixel-hair" />
+      <i className="pixel-headset" />
+    </span>
+  );
+}
+
+export default function Home() {
+  const [engine] = useState(() => new Company());
+  const [snap, setSnap] = useState<Snapshot>(() => engine.snapshot());
+  const [view, setView] = useState<View>("live");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [follow, setFollow] = useState(true);
+  const [briefing, setBriefing] = useState(false);
+  const [filter, setFilter] = useState<"전체" | DeptStatus>("전체");
+  const [toast, setToast] = useState("");
+  const [integrations, setIntegrations] = useState<IntegrationStatus | null>(null);
+  const [publishState, setPublishState] = useState<{ busy: boolean; result: PublishResult | null; error: string }>({
+    busy: false,
+    result: null,
+    error: "",
+  });
+  const publishedRef = useRef(false);
+  const [autoLoop, setAutoLoop] = useState(false);
+  const [dayCount, setDayCount] = useState(1);
+  const autoLoopRef = useRef(autoLoop);
+  autoLoopRef.current = autoLoop;
+
+  useEffect(() => {
+    let raf = 0;
+    let last = performance.now();
+    let acc = 0;
+    const loop = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      engine.tick(dt);
+      acc += dt;
+      if (acc >= 0.18) {
+        acc = 0;
+        setSnap(engine.snapshot());
+      }
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, [engine]);
+
+  useEffect(() => {
+    engine.setBriefingHandler(() => setBriefing(true));
+    return () => engine.setBriefingHandler(null);
+  }, [engine]);
+
+  const showToast = useCallback((message: string) => {
+    setToast(message);
+    window.setTimeout(() => setToast(""), 2400);
+  }, []);
+
+  const onSelect = useCallback((agent: Agent) => setSelectedId(agent.id), []);
+
+  const downloadReport = useCallback(() => {
+    const report = buildReport(engine.snapshot());
+    const dateStr = new Date().toISOString().slice(0, 10);
+    downloadTextFile(`${COMPANY.reportName}_보고서_${dateStr}.txt`, reportToText(report));
+    showToast("보고서를 다운로드했어요");
+  }, [engine, showToast]);
+
+  // 연동 설정 여부를 서버에서 받아온다 (값이 아니라 설정 여부만)
+  useEffect(() => {
+    fetchIntegrations()
+      .then(setIntegrations)
+      .catch(() => setIntegrations(null));
+  }, []);
+
+  const sendReport = useCallback(
+    async (auto: boolean) => {
+      setPublishState((state) => ({ ...state, busy: true, error: "" }));
+      try {
+        const result = await publish(buildReport(engine.snapshot()));
+        setPublishState({ busy: false, result, error: "" });
+
+        engine.pushLog("📦", "오늘자 보고서 준비 완료 — 감사팀 다운로드 가능", "mint");
+        engine.pushChat(
+          "staff",
+          "김세리",
+          "보고서 발행 결과입니다.\n· 감사팀이 확인할 수 있도록 보고서를 준비해 뒀어요.\n· 위쪽 '📥 보고서 다운로드' 버튼을 누르면 오늘자 보고서를 받을 수 있어요.",
+        );
+        if (!auto) showToast("보고서를 준비했어요 — 감사팀이 다운로드할 수 있어요");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setPublishState({ busy: false, result: null, error: message });
+        engine.pushLog("⚠️", `완료 보고 발행 실패 — ${message}`, "lav");
+        if (!auto) showToast("발행 실패 — 연동 설정을 확인해주세요");
+      }
+    },
+    [engine, showToast],
+  );
+
+  // 하루가 끝나면 자동으로 한 번 발행한다 (+ 자동 반복 모드면 보고서 다운로드 후 바로 다음날 출근)
+  useEffect(() => {
+    if (snap.dayComplete && !publishedRef.current) {
+      publishedRef.current = true;
+      void sendReport(true);
+
+      if (autoLoopRef.current) {
+        const report = buildReport(engine.snapshot());
+        const dateStr = new Date().toISOString().slice(0, 10);
+        downloadTextFile(`${COMPANY.reportName}_보고서_${dayCount}일차_${dateStr}.txt`, reportToText(report));
+
+        // 잠깐 숨 돌린 뒤(직원들 라운지 연출 감상 시간) 바로 다음날을 시작한다
+        window.setTimeout(() => {
+          if (!autoLoopRef.current) return;
+          engine.start();
+          setDayCount((n) => n + 1);
+          publishedRef.current = false;
+        }, 4000);
+      }
+    }
+    if (!snap.dayComplete && snap.running) publishedRef.current = false;
+  }, [snap.dayComplete, snap.running, sendReport, engine, dayCount]);
+
+  // 자동 반복 모드일 때는 "대표 승인" 대기가 뜨면 자동으로 승인해서 멈추지 않게 한다
+  useEffect(() => {
+    if (autoLoop && snap.approvalPending) {
+      const timer = window.setTimeout(() => engine.approve(), 1200);
+      return () => window.clearTimeout(timer);
+    }
+  }, [autoLoop, snap.approvalPending, engine]);
+
+  const askAgent = useCallback(
+    (agent: Agent) => {
+      engine.command(`${agent.name} 지금 뭐해?`);
+      setSelectedId(null);
+      window.setTimeout(
+        () => document.getElementById("ceo-console")?.scrollIntoView({ behavior: "smooth", block: "center" }),
+        60,
+      );
+    },
+    [engine],
+  );
+
+  const start = () => {
+    engine.start();
+    setBriefing(false);
+    setView("live");
+    setDayCount(1);
+    showToast("07:00 — AI 직원 32명이 출근합니다 ✨");
+  };
+
+  const toggleAutoLoop = () => {
+    setAutoLoop((v) => {
+      const next = !v;
+      showToast(next ? "🔁 무한 반복 모드 ON — 하루가 끝나면 자동으로 다음날이 시작돼요" : "🔁 무한 반복 모드 OFF");
+      return next;
+    });
+  };
+
+  const approve = () => {
+    engine.approve();
+    showToast("승인 완료! 제작팀이 바로 움직여요");
+  };
+
+  const teams = useMemo(
+    () =>
+      DEPT_ROOMS.map((room) => {
+        const lead = DEPT_LEAD[room.id];
+        const status = snap.deptStatus[room.id] ?? "대기";
+        return {
+          id: room.id,
+          icon: room.icon,
+          name: room.name,
+          room: room.short,
+          lead,
+          status,
+          ...DEPT_BRIEF[room.id],
+        };
+      }),
+    [snap.deptStatus],
+  );
+
+  const filteredTeams = filter === "전체" ? teams : teams.filter((team) => team.status === filter);
+  const selected = selectedId ? engine.agentById.get(selectedId) ?? null : null;
+  const todo = snap.approvalPending ? 1 : 0;
+  const onDuty = engine.agents.filter((a) => a.status !== "출근 전").length;
+
+  return (
+    <main className="page-shell">
+      <div className="wrap">
+        <nav className="app-nav" aria-label="AI Company 화면 전환">
+          <div className="brand-chip">
+            <span>{COMPANY.logoLetter}</span>
+            <b>{COMPANY.name}</b>
+          </div>
+          <div className="nav-tabs">
+            <button className={view === "live" ? "active" : ""} onClick={() => setView("live")}>
+              🎮 라이브 오피스
+            </button>
+            <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>
+              📊 대시보드
+            </button>
+            <button className={view === "articles" ? "active" : ""} onClick={() => setView("articles")}>
+              📰 실제 발행된 원고
+            </button>
+            <button className={view === "company" ? "active" : ""} onClick={() => setView("company")}>
+              🏢 실시간 진짜 회사
+            </button>
+            <button
+              className={`todo-tab ${todo ? "urgent" : ""}`}
+              onClick={() => {
+                setView("live");
+                window.setTimeout(
+                  () => document.getElementById("ceo-approval")?.scrollIntoView({ behavior: "smooth", block: "center" }),
+                  60,
+                );
+              }}
+            >
+              📋 대표 할 일 <i>{todo}</i>
+            </button>
+          </div>
+        </nav>
+
+        {view === "live" ? (
+          <LiveView
+            engine={engine}
+            snap={snap}
+            follow={follow}
+            setFollow={setFollow}
+            selectedId={selectedId}
+            onSelect={onSelect}
+            onStart={start}
+            onApprove={approve}
+            onDuty={onDuty}
+            onPublish={() => void sendReport(false)}
+            onDownload={downloadReport}
+            publishBusy={publishState.busy}
+            publishResult={publishState.result}
+            autoLoop={autoLoop}
+            onToggleAutoLoop={toggleAutoLoop}
+            dayCount={dayCount}
+          />
+        ) : view === "dashboard" ? (
+          <DashboardView
+            teams={teams}
+            filteredTeams={filteredTeams}
+            filter={filter}
+            setFilter={setFilter}
+            snap={snap}
+            onStart={start}
+            onApprove={approve}
+            onSelect={(id) => setSelectedId(id)}
+            integrations={integrations}
+            publishResult={publishState.result}
+          />
+        ) : view === "articles" ? (
+          <ArticlesView />
+        ) : (
+          <AutonomousTeamPipeline />
+        )}
+
+        <footer>
+          이 툴은 갓생맘 🎀이 만들었어요
+          <br />
+          <a href="https://www.instagram.com/godseng.mom/" target="_blank" rel="noreferrer">
+            📷 @godseng.mom — 더 많은 크리에이터 툴 보러가기 →
+          </a>
+          <br />© godseng.mom · 자유롭게 쓰되 무단 재판매 금지
+        </footer>
+      </div>
+
+      {selected ? (
+        <ProfileModal
+          agent={selected}
+          onClose={() => setSelectedId(null)}
+          onAsk={(agent) => {
+            setView("live");
+            askAgent(agent);
+          }}
+        />
+      ) : null}
+      {briefing ? <BriefingModal snap={snap} onClose={() => setBriefing(false)} /> : null}
+      <div className={`toast ${toast ? "show" : ""}`} role="status">
+        {toast}
+      </div>
+    </main>
+  );
+}
+
+/**
+ * 원고 작성팀이 "실제로" NVIDIA NIM(build.nvidia.com 무료 티어)을 호출해서 진짜 레시피 원고를 쓰는 패널.
+ * 이 사이트는 서버가 없는 정적 사이트라, API 키는 이 탭이 열려 있는 동안만
+ * 메모리(React state)에 있다가 새로고침하면 사라집니다. 어디에도 저장되지 않아요.
+ */
+/**
+ * 팀장이 실제로 와서(실시간 AI 호출) 오늘 할 일을 보고하고,
+ * 대표가 승인하면 다음 단계로, 미승인하면 지시를 받아서 다시 보고하는 파이프라인.
+ * 기획팀 → 원고팀 → 검수팀 순서로 진행되고, 검수팀이 반려하면 원고팀이 다시 씀.
+ */
+type PipelineStage = "briefing" | "working" | "reviewing" | "done";
+
+type PipelineState = {
+  stage: PipelineStage;
+  proposal: ContentProposal | null;
+  draft: string | null;
+  review: ReviewResult | null;
+  busy: boolean;
+  error: string;
+  showInstructionBox: boolean;
+  instruction: string;
+  retryCount: number;
+};
+
+const INITIAL_PIPELINE_STATE: PipelineState = {
+  stage: "briefing",
+  proposal: null,
+  draft: null,
+  review: null,
+  busy: false,
+  error: "",
+  showInstructionBox: false,
+  instruction: "",
+  retryCount: 0,
+};
+
+function AutonomousTeamPipeline() {
+  const [apiKey, setApiKey] = useState("");
+  const [showKeyField, setShowKeyField] = useState(true);
+  const [state, setState] = useState<PipelineState>(INITIAL_PIPELINE_STATE);
+  const [publishedTitles, setPublishedTitles] = useState<string[]>([]);
+  const [finalDrafts, setFinalDrafts] = useState<{ title: string; markdown: string }[]>([]);
+
+  const requestPlan = useCallback(
+    async (instruction?: string) => {
+      if (!apiKey.trim()) {
+        setShowKeyField(true);
+        setState((s) => ({ ...s, error: "먼저 API 키를 입력해주세요." }));
+        return;
+      }
+      setState((s) => ({ ...s, busy: true, error: "", showInstructionBox: false }));
+      try {
+        const proposal = await planContent(apiKey, {
+          deptName: DEPT_LEAD["strategy1"]?.role ?? "키워드 기획팀",
+          leadName: DEPT_LEAD["strategy1"]?.name ?? "기획 팀장",
+          recentTitles: [...publishedTitles, ...finalDrafts.map((d) => d.title)],
+          instruction,
+        });
+        setState((s) => ({ ...s, busy: false, proposal, stage: "briefing" }));
+      } catch (err) {
+        setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
+      }
+    },
+    [apiKey, publishedTitles, finalDrafts],
+  );
+
+  const requestReview = useCallback(
+    async (markdown: string, keyword: string, category: string) => {
+      setState((s) => ({ ...s, busy: true, error: "" }));
+      try {
+        const review = await reviewDraft(apiKey, markdown, {
+          leadName: DEPT_LEAD["qa"]?.name ?? "검수 팀장",
+          keyword,
+          category,
+        });
+        setState((s) => ({ ...s, busy: false, review }));
+      } catch (err) {
+        setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
+      }
+    },
+    [apiKey],
+  );
+
+  const requestWrite = useCallback(
+    async (feedback?: string) => {
+      if (!state.proposal) return;
+      setState((s) => ({ ...s, busy: true, error: "", stage: "working" }));
+      try {
+        const draft = await writeDraft(apiKey, state.proposal, {
+          leadName: DEPT_LEAD["strategy2"]?.name ?? "원고 팀장",
+          feedback,
+        });
+        setState((s) => ({ ...s, busy: false, draft, stage: "reviewing" }));
+        // 작성이 끝나면 곧바로 검수 AI를 호출
+        void requestReview(draft, state.proposal.keyword, state.proposal.category);
+      } catch (err) {
+        setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
+      }
+    },
+    [apiKey, state.proposal, requestReview],
+  );
+
+  const handleApprove = useCallback(() => {
+    if (state.stage === "briefing" && state.proposal) {
+      void requestWrite(undefined);
+    }
+  }, [state.stage, state.proposal, requestWrite]);
+
+  const handleReviewOutcome = useCallback(() => {
+    if (!state.review) return;
+    if (state.review.passed && state.draft && state.proposal) {
+      setFinalDrafts((prev) => [...prev, { title: state.proposal!.title, markdown: state.draft! }]);
+      setPublishedTitles((prev) => [...prev, state.proposal!.title]);
+      setState(INITIAL_PIPELINE_STATE);
+    } else if (state.retryCount < 2) {
+      // 반려 → 원고팀이 피드백 받아서 재작성
+      const feedback = state.review.feedback;
+      setState((s) => ({ ...s, retryCount: s.retryCount + 1, review: null, draft: null }));
+      void requestWrite(feedback);
+    } else {
+      setState((s) => ({ ...s, error: "재작성 2회 시도 후에도 통과하지 못했어요. 기획을 바꿔서 다시 시작해주세요." }));
+    }
+  }, [state.review, state.draft, state.proposal, state.retryCount, requestWrite]);
+
+  const handleReject = useCallback(() => {
+    setState((s) => ({ ...s, showInstructionBox: true }));
+  }, []);
+
+  const handleSendInstruction = useCallback(() => {
+    void requestPlan(state.instruction || undefined);
+    setState((s) => ({ ...s, instruction: "" }));
+  }, [requestPlan, state.instruction]);
+
+  const handleStart = useCallback(() => {
+    setState(INITIAL_PIPELINE_STATE);
+    void requestPlan();
+  }, [requestPlan]);
+
+  const planLeadName = DEPT_LEAD["strategy1"]?.name ?? "기획 팀장";
+  const planDeptTitle = "키워드 기획팀";
+
+  return (
+    <section className="win rail-card" style={{ margin: "24px 0" }}>
+      <div className="win-bar">
+        <span>🏢 real.company (실시간 팀장 보고)</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className="win-body" style={{ padding: 16 }}>
+        <p style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>
+          팀장 AI가 실시간으로 와서 오늘 할 일을 보고해요. 승인하면 그대로 진행되고,
+          미승인하면 지시를 내려서 다시 보고받을 수 있어요.
+        </p>
+
+        {showKeyField || !apiKey ? (
+          <div style={{ marginBottom: 12 }}>
+            <input
+              type="password"
+              placeholder="nvapi-... (NVIDIA API 키)"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #ccc", marginBottom: 4 }}
+            />
+            <p style={{ fontSize: 11, opacity: 0.7 }}>
+              키는 저장되지 않고 이 탭 메모리에서만 쓰여요. build.nvidia.com에서 무료로 발급받을 수 있어요.
+            </p>
+          </div>
+        ) : (
+          <button className="text-button" style={{ marginBottom: 8 }} onClick={() => setShowKeyField(true)}>
+            API 키 변경
+          </button>
+        )}
+
+        {state.stage === "briefing" && !state.proposal && !state.busy ? (
+          <button className="btn approve-button" onClick={handleStart}>
+            오늘 업무 시작하기
+          </button>
+        ) : null}
+
+        {state.busy ? <p style={{ fontSize: 13 }}>⏳ {leadNameForStage(state)} 작업 중...</p> : null}
+
+        {state.error ? (
+          <p style={{ color: "#c0392b", fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap" }}>{state.error}</p>
+        ) : null}
+
+        {/* 1) 기획 보고 */}
+        {state.proposal && state.stage === "briefing" && !state.busy ? (
+          <div className="report-card" style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.03)", borderRadius: 8 }}>
+            <p style={{ fontWeight: 600, marginBottom: 4 }}>
+              📋 {planDeptTitle} {planLeadName} 팀장 보고
+              <span className="mini-badge mint" style={{ marginLeft: 8, fontSize: 11 }}>
+                {state.proposal.category}
+              </span>
+            </p>
+            <p style={{ fontSize: 13, marginBottom: 8, opacity: 0.85 }}>{state.proposal.reason}</p>
+            <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+              <div><b>제목</b>: {state.proposal.title}</div>
+              <div><b>키워드</b>: {state.proposal.keyword}</div>
+              <div><b>기획 의도</b>: {state.proposal.angle}</div>
+              <div style={{ marginTop: 4 }}><b>실행 계획</b>:</div>
+              <ul style={{ margin: "4px 0 0 18px" }}>
+                {state.proposal.steps.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ul>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button className="btn approve-button" onClick={handleApprove}>
+                ✅ 승인
+              </button>
+              <button className="btn btn-ghost" onClick={handleReject}>
+                ❌ 미승인
+              </button>
+            </div>
+            {state.showInstructionBox ? (
+              <div style={{ marginTop: 10 }}>
+                <textarea
+                  placeholder="예: 이 주제 말고 다른 부위로, 더 캐주얼한 톤으로 등"
+                  value={state.instruction}
+                  onChange={(e) => setState((s) => ({ ...s, instruction: e.target.value }))}
+                  style={{ width: "100%", minHeight: 60, padding: 8, borderRadius: 6, border: "1px solid #ccc", fontSize: 13 }}
+                />
+                <button className="btn approve-button" style={{ marginTop: 6 }} onClick={handleSendInstruction}>
+                  지시 전달하고 다시 보고받기
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {/* 2) 작성 중 */}
+        {state.stage === "working" && state.busy ? (
+          <p style={{ fontSize: 13, marginTop: 8 }}>
+            ✍️ {DEPT_LEAD["strategy2"]?.name ?? "원고 팀장"}이 원고를 쓰고 있어요...
+          </p>
+        ) : null}
+
+        {/* 3) 검수 결과 */}
+        {state.stage === "reviewing" && state.review && !state.busy ? (
+          <div className="report-card" style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.03)", borderRadius: 8 }}>
+            <p style={{ fontWeight: 600, marginBottom: 4 }}>
+              🔍 {DEPT_LEAD["qa"]?.name ?? "검수 팀장"} 검수 결과: {state.review.passed ? "✅ 통과" : "❌ 반려"}
+            </p>
+            <p style={{ fontSize: 13, opacity: 0.85 }}>{state.review.feedback}</p>
+            {!state.review.passed && state.retryCount >= 2 ? null : (
+              <button className="btn approve-button" style={{ marginTop: 8 }} onClick={handleReviewOutcome}>
+                {state.review.passed ? "원고 확정하고 다음 팀으로" : "피드백 반영해서 재작성 요청"}
+              </button>
+            )}
+          </div>
+        ) : null}
+
+        {/* 완료된 원고 목록 */}
+        {finalDrafts.length > 0 ? (
+          <div style={{ marginTop: 16, borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: 10 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <p style={{ fontSize: 12, fontWeight: 600 }}>✅ 오늘 확정된 원고</p>
+              {finalDrafts.length > 1 ? (
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    finalDrafts.forEach((d, i) => {
+                      window.setTimeout(() => {
+                        const dateStr = new Date().toISOString().slice(0, 10);
+                        downloadMarkdownFile(`${dateStr}-${d.title.slice(0, 20)}.md`, d.markdown);
+                      }, i * 300); // 브라우저가 다운로드를 한꺼번에 막지 않도록 살짝 간격을 둠
+                    });
+                  }}
+                >
+                  📥 전체 다운로드
+                </button>
+              ) : null}
+            </div>
+            {finalDrafts.map((d, i) => (
+              <details key={i} style={{ marginBottom: 6 }}>
+                <summary style={{ fontSize: 13, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{d.title}</span>
+                  <button
+                    className="text-button"
+                    style={{ fontSize: 11 }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      const dateStr = new Date().toISOString().slice(0, 10);
+                      downloadMarkdownFile(`${dateStr}-${d.title.slice(0, 20)}.md`, d.markdown);
+                    }}
+                  >
+                    📥 다운로드
+                  </button>
+                </summary>
+                <pre
+                  style={{
+                    maxHeight: 220,
+                    overflow: "auto",
+                    whiteSpace: "pre-wrap",
+                    fontSize: 12,
+                    background: "rgba(0,0,0,0.04)",
+                    padding: 8,
+                    borderRadius: 6,
+                  }}
+                >
+                  {d.markdown}
+                </pre>
+              </details>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function leadNameForStage(state: PipelineState): string {
+  if (state.stage === "briefing") return DEPT_LEAD["strategy1"]?.name ?? "기획 팀장";
+  if (state.stage === "working") return DEPT_LEAD["strategy2"]?.name ?? "원고 팀장";
+  return DEPT_LEAD["qa"]?.name ?? "검수 팀장";
+}
+
+function AiWriterPanel({ plan }: { plan: import("./game/sim").ContentPlan }) {
+  const [apiKey, setApiKey] = useState("");
+  const [showKeyField, setShowKeyField] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<WriterResult | null>(null);
+
+  const handleGenerate = useCallback(async () => {
+    if (!apiKey.trim()) {
+      setShowKeyField(true);
+      setError("먼저 API 키를 입력해주세요.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const draft = await generateRecipeDraft(apiKey, {
+        title: plan.title,
+        keyword: plan.keyword,
+        angle: plan.angle,
+        steps: plan.steps,
+      });
+      setResult(draft);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [apiKey, plan]);
+
+  const handleDownload = useCallback(() => {
+    if (!result) return;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    downloadMarkdownFile(`원고_${plan.title.slice(0, 20)}_${dateStr}.md`, result.markdown);
+  }, [result, plan.title]);
+
+  return (
+    <section className="win rail-card">
+      <div className="win-bar">
+        <span>✍️ ai.writer (실제 생성)</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className="win-body approval-body">
+        <p style={{ marginBottom: 8 }}>
+          이 승인된 기획안으로 <b>실제 NVIDIA NIM(무료 티어)</b>을 호출해서 진짜 원고를 만들어요.
+          화면 연출이 아니라 진짜 텍스트가 생성됩니다.
+        </p>
+
+        {showKeyField || !apiKey ? (
+          <div style={{ marginBottom: 8 }}>
+            <input
+              type="password"
+              placeholder="nvapi-... (NVIDIA API 키)"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid #ccc",
+                marginBottom: 4,
+              }}
+            />
+            <p style={{ fontSize: 11, opacity: 0.7 }}>
+              키는 저장되지 않고 이 탭 메모리에서만 쓰여요. 새로고침하면 사라져요.
+              build.nvidia.com에서 무료로 발급받을 수 있어요.
+            </p>
+          </div>
+        ) : (
+          <button
+            className="text-button"
+            style={{ marginBottom: 8 }}
+            onClick={() => setShowKeyField(true)}
+          >
+            API 키 변경
+          </button>
+        )}
+
+        <button className="btn approve-button" onClick={handleGenerate} disabled={busy}>
+          {busy ? "원고 생성 중..." : "실제 원고 생성하기"}
+        </button>
+
+        {error ? (
+          <p style={{ color: "#c0392b", fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap" }}>{error}</p>
+        ) : null}
+
+        {result ? (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span className="mini-badge mint">생성 완료 · {result.model}</span>
+              <button className="text-button" onClick={handleDownload}>
+                📥 .md 다운로드
+              </button>
+            </div>
+            <pre
+              style={{
+                maxHeight: 260,
+                overflow: "auto",
+                whiteSpace: "pre-wrap",
+                fontSize: 12,
+                background: "rgba(0,0,0,0.04)",
+                padding: 10,
+                borderRadius: 8,
+              }}
+            >
+              {result.markdown}
+            </pre>
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 16, borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: 12 }}>
+          <p style={{ fontSize: 12, marginBottom: 6 }}>
+            <b>또는</b> — 매일 자동으로 쌓이게 하고 싶다면, GitHub Actions로 실제 발행 파이프라인을
+            돌릴 수 있어요. "📰 실제 발행된 원고" 탭에 결과가 쌓여요.
+          </p>
+          {GITHUB_REPO ? (
+            <a
+              className="btn btn-ghost"
+              href={`https://github.com/${GITHUB_REPO}/actions/workflows/generate-content.yml`}
+              target="_blank"
+              rel="noreferrer"
+              style={{ display: "inline-block", fontSize: 12 }}
+            >
+              GitHub Actions에서 실제 생성 실행하기 →
+            </a>
+          ) : (
+            <p style={{ fontSize: 11, opacity: 0.7 }}>
+              company.config.ts의 GITHUB_REPO를 채우면 여기 바로가기 버튼이 생겨요.
+            </p>
+          )}
+          <p style={{ fontSize: 11, opacity: 0.6, marginTop: 6 }}>
+            실행 화면에서 아래 값을 넣으면 이 승인안 그대로 생성돼요 (복사해서 붙여넣기):
+          </p>
+          <pre
+            style={{
+              fontSize: 11,
+              background: "rgba(0,0,0,0.04)",
+              padding: 8,
+              borderRadius: 6,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {`title: ${plan.title}\nkeyword: ${plan.keyword}\nangle: ${plan.angle}\nsteps:\n${plan.steps.join("\n")}`}
+          </pre>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type ArticleEntry = {
+  file: string;
   title: string;
   keyword: string;
-  angle: string;
-  steps: string[];
-  reason: string; // 왜 이 주제를 골랐는지 (팀장 보고용)
-  category: string; // "온도가이드" | "고기소개" | "비교랭킹" 등 어떤 종류의 콘텐츠인지
+  date: string;
+  generatedAt: string;
 };
 
-// 회사가 실제로 다루는 3가지 콘텐츠 카테고리.
-// 기획 AI가 매번 이 중 하나를 스스로 골라서 기획하게 한다.
-const CONTENT_CATEGORIES = [
-  "온도·시간 가이드 — 부위별로 굽는 온도, 시간, 굽기 정도(레어/미디엄/웰던)를 알려주는 실용 가이드",
-  "고기 소개 — 특정 부위나 품종(예: 등심, 안심, 삼겹살, 와규, 한우 등급 등)이 뭐가 특별한지 소개하는 글",
-  "맛 비교·랭킹 — 여러 부위나 품종을 비교해서 어떤 게 더 맛있는지, 어떤 상황에 뭐가 더 나은지 정리하는 글",
+/**
+ * GitHub Actions가 실제로 생성해서 쌓은 원고 목록을 보여주는 화면.
+ * public/content/index.json 을 읽어온다 (생성 스크립트가 매번 갱신함).
+ */
+function ArticlesView() {
+  const [articles, setArticles] = useState<ArticleEntry[] | null>(null);
+  const [error, setError] = useState("");
+  const [openFile, setOpenFile] = useState<string | null>(null);
+  const [openText, setOpenText] = useState("");
+  const [openBusy, setOpenBusy] = useState(false);
+
+  useEffect(() => {
+    fetch(new URL("content/index.json", document.baseURI).toString())
+      .then((res) => {
+        if (!res.ok) throw new Error("목록을 불러오지 못했어요.");
+        return res.json();
+      })
+      .then((data: ArticleEntry[]) => setArticles(data))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  const openArticle = useCallback(async (file: string) => {
+    setOpenFile(file);
+    setOpenBusy(true);
+    setOpenText("");
+    try {
+      const res = await fetch(new URL(`content/${file}`, document.baseURI).toString());
+      if (!res.ok) throw new Error("원고를 불러오지 못했어요.");
+      setOpenText(await res.text());
+    } catch (err) {
+      setOpenText(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOpenBusy(false);
+    }
+  }, []);
+
+  return (
+    <section className="win rail-card" style={{ margin: "24px 0" }}>
+      <div className="win-bar">
+        <span>📰 real.content</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className="win-body" style={{ padding: 16 }}>
+        <p style={{ marginBottom: 12, fontSize: 13, opacity: 0.8 }}>
+          여기 보이는 글은 화면 연출이 아니라, GitHub Actions가 실제로 NVIDIA NIM을 호출해서 만든
+          진짜 원고예요. 매일 자동으로 쌓이거나, 저장소 Actions 탭에서 직접 실행할 수 있어요.
+        </p>
+
+        {error ? <p style={{ color: "#c0392b" }}>{error}</p> : null}
+
+        {articles === null && !error ? <p>목록을 불러오는 중...</p> : null}
+
+        {articles && articles.length === 0 ? (
+          <p style={{ opacity: 0.7 }}>
+            아직 실제로 생성된 원고가 없어요. GitHub 저장소 Actions 탭에서 "AI 원고 생성"
+            워크플로를 실행하면 여기에 쌓이기 시작해요.
+          </p>
+        ) : null}
+
+        {articles && articles.length > 0 ? (
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {articles.map((a) => (
+              <li
+                key={a.file}
+                style={{
+                  padding: "10px 0",
+                  borderBottom: "1px solid rgba(0,0,0,0.08)",
+                  cursor: "pointer",
+                }}
+                onClick={() => openArticle(a.file)}
+              >
+                <b>{a.title}</b>
+                <div style={{ fontSize: 12, opacity: 0.6 }}>
+                  {a.date} · 키워드: {a.keyword}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {openFile ? (
+          <div style={{ marginTop: 16, borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+              <b style={{ fontSize: 13 }}>{openFile}</b>
+              <button className="text-button" onClick={() => setOpenFile(null)}>
+                닫기
+              </button>
+            </div>
+            {openBusy ? (
+              <p>불러오는 중...</p>
+            ) : (
+              <pre
+                style={{
+                  maxHeight: 320,
+                  overflow: "auto",
+                  whiteSpace: "pre-wrap",
+                  fontSize: 12,
+                  background: "rgba(0,0,0,0.04)",
+                  padding: 10,
+                  borderRadius: 8,
+                }}
+              >
+                {openText}
+              </pre>
+            )}
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function LiveView({
+  engine,
+  snap,
+  follow,
+  setFollow,
+  selectedId,
+  onSelect,
+  onStart,
+  onApprove,
+  onDuty,
+  onPublish,
+  onDownload,
+  publishBusy,
+  publishResult,
+  autoLoop,
+  onToggleAutoLoop,
+  dayCount,
+}: {
+  engine: Company;
+  snap: Snapshot;
+  follow: boolean;
+  setFollow: (value: boolean) => void;
+  selectedId: string | null;
+  onSelect: (agent: Agent) => void;
+  onStart: () => void;
+  onApprove: () => void;
+  onDuty: number;
+  onPublish: () => void;
+  onDownload: () => void;
+  publishBusy: boolean;
+  publishResult: PublishResult | null;
+  autoLoop: boolean;
+  onToggleAutoLoop: () => void;
+  dayCount: number;
+}) {
+  const progress = Math.round((snap.phaseIndex / (PHASES.length - 1)) * 100);
+
+  return (
+    <>
+      <header className="live-hero">
+        <div>
+          <p className="eyebrow">LIVE OFFICE · 32 AI STAFF · REAL-TIME</p>
+          <h1>
+            {COMPANY.titlePrefix} <em className="highlight">{COMPANY.titleAccent}</em>
+          </h1>
+          <p>출근하고, 자리에서 일하고, 회의실에 모여 회의하고, 대표실로 보고하러 갑니다.</p>
+        </div>
+        <div className="live-clock">
+          <span>SEOUL · {dayCount}일차</span>
+          <b>{snap.clock}</b>
+          <small>{snap.phase}</small>
+        </div>
+      </header>
+
+      <section className="live-bar">
+        <button className="btn btn-primary" onClick={onStart} disabled={snap.running}>
+          {snap.running ? "직원들이 일하는 중…" : snap.dayComplete ? "다시 출근시키기" : "오늘 업무 시작하기"}
+        </button>
+        <button
+          className={`btn btn-ghost ${autoLoop ? "on" : ""}`}
+          onClick={onToggleAutoLoop}
+          title="켜두면 하루가 끝나도 쉬지 않고 바로 다음날을 시작해요. 하루치 보고서도 그때마다 자동으로 다운로드돼요."
+        >
+          {autoLoop ? "🔁 무한 반복 ON" : "🔁 무한 반복 OFF"}
+        </button>
+        <button className="btn btn-ghost" onClick={() => engine.togglePause()}>
+          {snap.paused ? "▶ 재생" : "⏸ 일시정지"}
+        </button>
+        <div className="speed-wrap">
+          <span className="speed-label" title="시뮬레이션 전체(걷기·업무·대사)가 함께 빨라져요. 실제 외부 작업 속도와는 무관합니다.">
+            재생 속도
+          </span>
+          <div className="speed-group" role="group" aria-label="재생 속도">
+            {[1, 2, 4].map((value) => (
+              <button
+                key={value}
+                className={!snap.turbo && snap.speed === value ? "on" : ""}
+                onClick={() => engine.setSpeed(value)}
+                title={value === 1 ? "말풍선 읽기·화면녹화용" : value === 4 ? "결과만 빠르게" : "기본"}
+              >
+                {value}x
+              </button>
+            ))}
+            <button
+              className={`skip ${snap.turbo ? "on" : ""}`}
+              onClick={() => engine.skipToDecision()}
+              disabled={!snap.running || snap.approvalPending}
+              title="대표님이 결정할 일이 생길 때까지 단숨에 건너뜁니다"
+            >
+              {snap.turbo ? "건너뛰는 중…" : "⏭ 결정까지"}
+            </button>
+          </div>
+        </div>
+        <button className={`btn btn-ghost ${follow ? "on" : ""}`} onClick={() => setFollow(!follow)}>
+          🎥 자동 추적 {follow ? "ON" : "OFF"}
+        </button>
+        <button
+          className={`btn btn-ghost publish-btn ${publishResult ? "sent" : ""}`}
+          onClick={onPublish}
+          disabled={publishBusy}
+          title="완료 보고를 준비해서 감사팀이 다운로드할 수 있도록 알립니다"
+        >
+          {publishBusy ? "준비 중…" : "📤 보고 발행"}
+        </button>
+        <button
+          className="btn btn-ghost"
+          onClick={onDownload}
+          title="지금까지 진행 상황을 텍스트 파일로 내 컴퓨터에 저장합니다"
+        >
+          📥 보고서 다운로드
+        </button>
+        <div className="live-progress">
+          <span>
+            {snap.phase} · {progress}%
+          </span>
+          <i>
+            <b style={{ width: `${progress}%` }} />
+          </i>
+        </div>
+        <div className="live-counts">
+          <span className="lc on-duty">근무 {onDuty}</span>
+          <span className="lc done">완료 {snap.stats.done}</span>
+          <span className="lc working">진행 {snap.stats.working}</span>
+          <span className="lc blocked">연동대기 {snap.stats.blocked}</span>
+        </div>
+      </section>
+
+      <section className="live-grid">
+        <OfficeWorld engine={engine} snap={snap} selectedId={selectedId} follow={follow} onSelect={onSelect} />
+
+        <aside className="live-rail">
+          <CeoConsole engine={engine} snap={snap} />
+
+          <section className="win rail-card" id="ceo-approval">
+            <div className="win-bar">
+              <span>✅ ceo.approval</span>
+              <span className="window-controls">—　▢　✕</span>
+            </div>
+            <div className={`win-body approval-body ${snap.approvalPending ? "pending" : ""}`}>
+              {snap.approvalPending ? (
+                <>
+                  <div className="approval-top">
+                    <span className="mini-badge yellow">TOP 1 제안 · 92점</span>
+                    <span className="score blink">결재 대기</span>
+                  </div>
+                  <h3>AI 회사가 매일 아침 나 대신 출근한다면?</h3>
+                  <p>회의실에서 최아름·한도빈·김세리가 대표님을 기다리고 있어요.</p>
+                  <div className="reason-list">
+                    <span>① 실제 구축 과정</span>
+                    <span>② 저장할 운영 구조</span>
+                    <span>③ 날것의 시행착오</span>
+                  </div>
+                  <button className="btn approve-button" onClick={onApprove}>
+                    이 콘텐츠 승인하기
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="approval-top">
+                    <span className="mini-badge mint">{snap.approved ? "오늘 결재 완료" : "결재 대기 없음"}</span>
+                  </div>
+                  <h3>{snap.approved ? "승인하신 안으로 제작 중이에요" : "아직 올라온 안건이 없어요"}</h3>
+                  <p>
+                    {snap.approved
+                      ? "대표 승인 이후 원고 → 제작 → 보관까지 이어집니다."
+                      : "업무를 시작하면 콘텐츠 전략팀이 TOP 3를 회의실로 올려요."}
+                  </p>
+                </>
+              )}
+            </div>
+          </section>
+
+          {snap.approved && snap.contentPlan ? <AiWriterPanel plan={snap.contentPlan} /> : null}
+
+          <section className="win rail-card feed-card">
+            <div className="win-bar">
+              <span>📡 live.feed</span>
+              <span className="window-controls">—　▢　✕</span>
+            </div>
+            <div className="win-body feed-body">
+              {snap.meetingTitle ? <div className="feed-now">💬 회의 진행 중 — {snap.meetingTitle}</div> : null}
+              <ul className="feed-list">
+                {snap.log.map((entry) => (
+                  <li key={entry.id} className={entry.tone}>
+                    <b>{entry.time}</b>
+                    <i>{entry.icon}</i>
+                    <span>{entry.text}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </section>
+
+          <section className="win rail-card">
+            <div className="win-bar">
+              <span>👥 staff.roster</span>
+              <span className="window-controls">—　▢　✕</span>
+            </div>
+            <div className="win-body roster-body">
+              {DEPT_ROOMS.map((room) => (
+                <div className="roster-dept" key={room.id}>
+                  <p>
+                    <b>
+                      {room.icon} {room.name}
+                    </b>
+                    <i className={`rm-dot ${statusClass[snap.deptStatus[room.id] ?? "대기"]}`} />
+                  </p>
+                  <div className="roster-chips">
+                    {STAFF.filter((s) => s.deptId === room.id).map((seed) => {
+                      const agent = engine.agentById.get(seed.id);
+                      return (
+                        <button
+                          key={seed.id}
+                          className={`roster-chip ${selectedId === seed.id ? "on" : ""}`}
+                          onClick={() => agent && onSelect(agent)}
+                        >
+                          <i style={{ background: seed.shirt, borderColor: seed.hair }} />
+                          {seed.name}
+                          <small>{agent?.status ?? "출근 전"}</small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        </aside>
+      </section>
+    </>
+  );
+}
+
+const QUICK_ORDERS = [
+  { label: "현황 보고", command: "현황 보고해줘" },
+  { label: "왜 늦어져?", command: "왜 늦어지고 있어?" },
+  { label: "회의 소집", command: "전 부서 회의 소집" },
+  { label: "지금 브리핑", command: "지금 브리핑 올라와" },
+  { label: "집중 모드", command: "집중 모드" },
+  { label: "속도 올려", command: "속도 좀 올려줘" },
 ];
 
-export async function planContent(
-  apiKey: string,
-  opts: { deptName: string; leadName: string; recentTitles: string[]; instruction?: string },
-): Promise<ContentProposal> {
-  const avoidList =
-    opts.recentTitles.length > 0
-      ? `이미 다룬 주제(중복 피할 것): ${opts.recentTitles.join(", ")}`
-      : "아직 발행된 글이 없어요.";
+function CeoConsole({ engine, snap }: { engine: Company; snap: Snapshot }) {
+  const [draft, setDraft] = useState("");
+  const logRef = useRef<HTMLDivElement>(null);
+  const count = snap.chat.length;
 
-  const instructionLine = opts.instruction
-    ? `\n[대표 지시사항 — 반드시 반영할 것]\n${opts.instruction}\n`
-    : "";
+  useEffect(() => {
+    const el = logRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [count]);
 
-  const prompt = [
-    `너는 "마이야르" 고기 콘텐츠 회사의 "${opts.deptName}" 팀장 ${opts.leadName}이야.`,
-    `이 회사는 "고기 굽는 온도 가이드"와 "어떤 고기가 유명하고 맛있는지 소개"하는 콘텐츠로`,
-    `검색 트래픽과 애드센스 수익을 만드는 게 사업이야.`,
-    `오늘 발행할 콘텐츠 기획안을 스스로 정해서 대표에게 보고해야 해.`,
-    ``,
-    `아래 3가지 콘텐츠 카테고리 중 하나를 골라서 기획해줘 (매번 다양하게 골고루):`,
-    ...CONTENT_CATEGORIES.map((c) => `- ${c}`),
-    ``,
-    avoidList,
-    instructionLine,
-    `아래 JSON 형식으로만 답해줘 (다른 설명 없이 JSON만):`,
-    `{`,
-    `  "category": "위 3가지 카테고리 이름 중 하나(짧게, 예: 온도가이드/고기소개/맛비교)",`,
-    `  "title": "콘텐츠 제목",`,
-    `  "keyword": "타깃 키워드",`,
-    `  "angle": "기획 의도 (왜 이 주제, 어떤 각도로 쓸지)",`,
-    `  "steps": ["실행계획1", "실행계획2", "실행계획3", "실행계획4"],`,
-    `  "reason": "대표에게 보고할 한두 문장 — 왜 오늘 이 주제와 카테고리를 선택했는지"`,
-    `}`,
-  ].join("\n");
-
-  const raw = await callModel(apiKey, prompt, 0.8);
-  const parsed = extractJson(raw) as Partial<ContentProposal>;
-
-  if (!parsed.title || !parsed.keyword || !parsed.angle || !Array.isArray(parsed.steps)) {
-    throw new Error("기획 AI 응답 형식이 이상해요. 다시 시도해주세요.");
-  }
-
-  return {
-    title: String(parsed.title),
-    keyword: String(parsed.keyword),
-    angle: String(parsed.angle),
-    steps: parsed.steps.map((s) => String(s)),
-    reason: String(parsed.reason ?? ""),
-    category: String(parsed.category ?? "온도가이드"),
+  const send = (text: string) => {
+    const value = text.trim();
+    if (!value) return;
+    engine.command(value);
+    setDraft("");
   };
+
+  return (
+    <section className="win rail-card console-card" id="ceo-console">
+      <div className="win-bar">
+        <span>🎤 ceo.console — 대표 지시창</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className="win-body console-body">
+        <div className="console-status">
+          <span className={`mini-badge ${snap.focusMode ? "yellow" : "mint"}`}>
+            {snap.focusMode ? "집중 모드 ON" : "평시 운영"}
+          </span>
+          {snap.busyWithOrder ? <span className="mini-badge lav">지시 처리 중…</span> : null}
+        </div>
+
+        <div className="console-log" ref={logRef}>
+          {snap.chat.map((entry) => (
+            <div key={entry.id} className={`console-line ${entry.from}`}>
+              <b>{entry.from === "ceo" ? "대표님" : entry.name}</b>
+              <p>{entry.text}</p>
+              <small>{entry.time}</small>
+            </div>
+          ))}
+        </div>
+
+        <div className="console-quick">
+          {QUICK_ORDERS.map((item) => (
+            <button key={item.label} onClick={() => send(item.command)}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        <form
+          className="console-input"
+          onSubmit={(event) => {
+            event.preventDefault();
+            send(draft);
+          }}
+        >
+          <input
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder="예: 캐러셀팀 지금 뭐해? / 왜 늦어져?"
+            aria-label="대표 지시 입력"
+          />
+          <button type="submit">지시</button>
+        </form>
+      </div>
+    </section>
+  );
 }
 
-// ---------------------------------------------------------------------------
-// 2단계: 작성 AI
-// ---------------------------------------------------------------------------
-
-export async function writeDraft(
-  apiKey: string,
-  plan: ContentProposal,
-  opts: { leadName: string; feedback?: string },
-): Promise<string> {
-  const feedbackLine = opts.feedback
-    ? `\n[검수팀 반려 사유 — 반드시 고칠 것]\n${opts.feedback}\n`
-    : "";
-
-  const structureGuide = pickStructureGuide(plan.category);
-
-  const prompt = [
-    `너는 "마이야르" 고기 콘텐츠 회사의 원고 작성 담당 ${opts.leadName}이야.`,
-    `아래 기획안을 바탕으로 실제로 발행 가능한 글을 한국어로 작성해줘.`,
-    ``,
-    `[기획안]`,
-    `카테고리: ${plan.category}`,
-    `제목: ${plan.title}`,
-    `타깃 키워드: ${plan.keyword}`,
-    `기획 의도: ${plan.angle}`,
-    `실행 계획:`,
-    ...plan.steps.map((s) => `- ${s}`),
-    feedbackLine,
-    `[작성 규칙]`,
-    `- 마크다운 형식으로 작성 (제목은 #, 소제목은 ##)`,
-    `- 도입부는 3줄 이내로 훅을 만들고 바로 핵심으로 들어갈 것`,
-    structureGuide,
-    `- 과장된 표현("초간단", "무조건", "국내 유일" 등 근거 없는 과장)은 쓰지 말 것`,
-    `- 반드시 한국어로만 작성할 것`,
-  ].join("\n");
-
-  return callModel(apiKey, prompt, 0.6);
+function ProfileModal({
+  agent,
+  onClose,
+  onAsk,
+}: {
+  agent: Agent;
+  onClose: () => void;
+  onAsk: (agent: Agent) => void;
+}) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section
+        className="win team-modal"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${agent.name} 프로필`}
+      >
+        <div className="win-bar">
+          <span>👤 employee_profile.exe</span>
+          <button className="window-close" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="win-body employee-profile">
+          <div className="profile-top">
+            <PixelEmployee hair={agent.hair} shirt={agent.shirt} accent={agent.accent} />
+            <div>
+              <span className="status-pill working">{agent.status}</span>
+              <h2>
+                {agent.name}
+                {agent.callsign ? <small> · {agent.callsign}</small> : null}
+              </h2>
+              <p>{agent.role}</p>
+            </div>
+          </div>
+          <div className="profile-task">
+            <span className="tiny-label">지금 하는 일</span>
+            <strong>{agent.taskLabel}</strong>
+            {agent.anim === "type" ? (
+              <span className="profile-progress">
+                <i style={{ width: `${Math.round(agent.progress * 100)}%` }} />
+              </span>
+            ) : null}
+          </div>
+          <div className="report-box">
+            <span className="tiny-label">한마디</span>
+            <strong>{agent.speech ?? agent.thoughts[0]}</strong>
+          </div>
+          <div className="profile-actions">
+            <button className="btn btn-primary" onClick={() => onAsk(agent)}>
+              🎤 지금 뭐 하는지 물어보기
+            </button>
+            <button className="text-button" onClick={onClose}>
+              닫기
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
 }
 
-/** 콘텐츠 카테고리에 맞는 글 구성 가이드를 고른다 */
-function pickStructureGuide(category: string): string {
-  if (category.includes("고기소개") || category.includes("고기 소개")) {
-    return "- 구성: 이 부위/품종이 뭔지 → 맛과 식감 특징 → 어떻게 먹으면 좋은지(굽기/조리법 추천) → 고를 때 팁 → FAQ 순서로 구성";
-  }
-  if (category.includes("비교") || category.includes("랭킹")) {
-    return "- 구성: 비교 기준 소개 → 항목별 비교(표 형태 권장) → 상황별 추천(가성비/특별한 날 등) → 결론 요약 순서로 구성. 표는 마크다운 테이블로 작성";
-  }
-  // 기본값: 온도·시간 가이드
-  return "- 구성: 재료/도구 목록 → 단계별 조리법(번호) → 실패 방지 팁 → FAQ → 보관법 순서로 구성. 온도·시간·굽기 정도 등 구체적인 수치를 반드시 포함할 것";
+function BriefingModal({ snap, onClose }: { snap: Snapshot; onClose: () => void }) {
+  return (
+    <div className="modal-backdrop" onClick={onClose}>
+      <section
+        className="win team-modal"
+        onClick={(event) => event.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-label="김비서 브리핑"
+      >
+        <div className="win-bar">
+          <span>📋 kim_secretary.brief</span>
+          <button className="window-close" onClick={onClose}>
+            ✕
+          </button>
+        </div>
+        <div className="win-body">
+          <p className="brief-date">{snap.clock} · 김세리 비서실장 최종 브리핑</p>
+          <h3>대표님, 오늘 회사 업무가 정리됐어요.</h3>
+          <ul>
+            <li>
+              <span className="dot green" />
+              완료 {snap.stats.done}팀 — 조사·기획·QA·대본·제작·저장까지 마쳤어요
+            </li>
+            <li>
+              <span className="dot green" />
+              대표 승인 1건 반영 — TOP 1 콘텐츠 제작 완료
+            </li>
+            <li>
+              <span className="dot gray" />
+              연동 대기 {snap.stats.blocked}팀 — 외부 서비스 연결이 필요해요
+            </li>
+          </ul>
+          <div className="decision-box">
+            <span className="tiny-label">오늘 대표님이 결정할 것</span>
+            <strong>없습니다. 내일 07:00에 다시 출근할게요 ✨</strong>
+          </div>
+          <button className="btn btn-primary" onClick={onClose}>
+            확인
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
-// ---------------------------------------------------------------------------
-// 3단계: 검수 AI
-// ---------------------------------------------------------------------------
-
-export type ReviewResult = {
-  passed: boolean;
-  feedback: string;
+type TeamRow = {
+  id: string;
+  icon: string;
+  name: string;
+  room: string;
+  lead: (typeof DEPT_LEAD)[string];
+  status: DeptStatus;
+  task: string;
+  report: string;
 };
 
-export async function reviewDraft(
-  apiKey: string,
-  markdown: string,
-  opts: { leadName: string; keyword: string; category?: string },
-): Promise<ReviewResult> {
-  const prompt = [
-    `너는 "마이야르" 고기 콘텐츠 회사의 검수 담당 ${opts.leadName}이야.`,
-    `아래 원고가 실제로 발행해도 될 만큼 품질이 충분한지 깐깐하게 평가해줘.`,
-    `카테고리: ${opts.category ?? "정보 확인 불가"}`,
-    `타깃 키워드 "${opts.keyword}"가 자연스럽게 들어갔는지, 구체적인 정보(수치·비교·근거)가 있는지,`,
-    `과장 표현은 없는지, 이 카테고리에 맞는 글 구성이 되어 있는지 확인해줘.`,
-    ``,
-    `[원고]`,
-    markdown.slice(0, 4000),
-    ``,
-    `아래 JSON 형식으로만 답해줘 (다른 설명 없이 JSON만):`,
-    `{`,
-    `  "passed": true 또는 false,`,
-    `  "feedback": "통과면 짧은 칭찬 한줄, 반려면 구체적으로 무엇을 고쳐야 하는지"`,
-    `}`,
-  ].join("\n");
+function DashboardView({
+  teams,
+  filteredTeams,
+  filter,
+  setFilter,
+  snap,
+  onStart,
+  onApprove,
+  onSelect,
+  integrations,
+  publishResult,
+}: {
+  teams: TeamRow[];
+  filteredTeams: TeamRow[];
+  filter: "전체" | DeptStatus;
+  setFilter: (value: "전체" | DeptStatus) => void;
+  snap: Snapshot;
+  onStart: () => void;
+  onApprove: () => void;
+  onSelect: (id: string) => void;
+  integrations: IntegrationStatus | null;
+  publishResult: PublishResult | null;
+}) {
+  // Notion·Discord 같은 외부 서비스로 자동 전송하지 않는다. 보고서는 감사팀이 직접
+  // 다운로드하도록 하고, 나머지는 아직 실제로 연동이 안 된 항목만 "대기"로 정직하게 표시한다.
+  const liveRows = integrations
+    ? [
+        {
+          name: "일일 보고서 (감사팀용)",
+          status: publishResult?.ready ? "다운로드 가능" : "발행 전",
+          tone: publishResult?.ready ? "mint" : "lav",
+          href: "",
+        },
+        { name: "Instagram", status: integrations.instagram?.need ?? "연동 대기", tone: "lav", href: "" },
+        { name: "Gmail", status: integrations.gmail?.need ?? "연동 대기", tone: "lav", href: "" },
+        { name: "재무 파일", status: integrations.finance?.need ?? "자료 대기", tone: "lav", href: "" },
+      ]
+    : [];
+  const rows = [...integrations2Static, ...liveRows];
 
-  const raw = await callModel(apiKey, prompt, 0.3);
-  const parsed = extractJson(raw) as Partial<ReviewResult>;
+  return (
+    <>
+      <header className="win hero">
+        <div className="win-bar">
+          <span>🎀 {COMPANY.windowLabel}</span>
+          <span className="window-controls" aria-hidden="true">
+            —　▢　✕
+          </span>
+        </div>
+        <div className="hero-body">
+          <div className="hero-copy">
+            <p className="eyebrow">TODAY · 07:00 AUTO START</p>
+            <h1>
+              오늘 회사가 어떻게 움직이는지 <em className="highlight">한눈에</em> 보여드려요
+            </h1>
+            <p>AI는 비서, 결정은 대표님. 12개 팀 32명의 조사부터 제작·저장·브리핑까지 한 흐름으로 관리해요.</p>
+          </div>
+          <div className="hero-actions">
+            <button className="btn btn-primary" onClick={onStart} disabled={snap.running}>
+              {snap.running ? "AI 팀원들이 근무 중…" : "오늘 업무 시작하기"}
+            </button>
+            <span className="trust-copy">실제 전송·게시·결제는 대표 승인 후 진행해요</span>
+          </div>
+        </div>
+      </header>
 
-  return {
-    passed: Boolean(parsed.passed),
-    feedback: String(parsed.feedback ?? ""),
-  };
+      <section className="summary-grid" aria-label="오늘 업무 요약">
+        <article className="metric yellow">
+          <span>AI 직원</span>
+          <strong>32</strong>
+          <small>STAFF</small>
+        </article>
+        <article className="metric mint">
+          <span>완료</span>
+          <strong>{snap.stats.done}</strong>
+          <small>DONE</small>
+        </article>
+        <article className="metric pink">
+          <span>진행 중</span>
+          <strong>{snap.stats.working}</strong>
+          <small>WORKING</small>
+        </article>
+        <article className="metric lav">
+          <span>대표 확인</span>
+          <strong>{snap.stats.approval}</strong>
+          <small>APPROVAL</small>
+        </article>
+        <article className="metric white">
+          <span>연동 대기</span>
+          <strong>{snap.stats.blocked}</strong>
+          <small>WAITING</small>
+        </article>
+      </section>
+
+      <section className="workspace">
+        <aside className="side-stack">
+          <section className="win">
+            <div className="win-bar">
+              <span>⚡ automation.status</span>
+              <span className="window-controls">—　▢　✕</span>
+            </div>
+            <div className="win-body">
+              <div className="schedule-card">
+                <div>
+                  <span className="tiny-label">NEXT RUN</span>
+                  <strong>매일 오전 7:00</strong>
+                  <p>컴퓨터 지시 없이 하루 업무 시작</p>
+                </div>
+                <span className="toggle-on">ON</span>
+              </div>
+              <div className="flow-list">
+                {PHASES.slice(1, 12).map((item, index) => (
+                  <div className={`flow-row ${snap.phaseIndex > index + 1 ? "past" : ""}`} key={item}>
+                    <span>{String(index + 1).padStart(2, "0")}</span>
+                    <b>{item}</b>
+                    <i>{snap.phaseIndex === index + 1 ? "●" : snap.phaseIndex > index + 1 ? "✓" : "·"}</i>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="win">
+            <div className="win-bar">
+              <span>🔗 integrations.link</span>
+              <span className="window-controls">—　▢　✕</span>
+            </div>
+            <div className="win-body integration-list">
+              {rows.map((item) =>
+                item.href ? (
+                  <a key={item.name} href={item.href} target="_blank" rel="noreferrer" className="integration-row">
+                    <b>{item.name}</b>
+                    <span className={`mini-badge ${item.tone}`}>{item.status}</span>
+                  </a>
+                ) : (
+                  <div key={item.name} className="integration-row">
+                    <b>{item.name}</b>
+                    <span className={`mini-badge ${item.tone}`}>{item.status}</span>
+                  </div>
+                ),
+              )}
+            </div>
+          </section>
+        </aside>
+
+        <div className="main-stack">
+          <section className="win">
+            <div className="win-bar">
+              <span>🏢 team_office.board</span>
+              <span className="window-controls">—　▢　✕</span>
+            </div>
+            <div className="win-body">
+              <div className="section-heading">
+                <div>
+                  <p className="eyebrow">LIVE OFFICE</p>
+                  <h2>12개 부서 · 팀장 12명 근무 현황</h2>
+                </div>
+                <div className="filter-tabs" role="group" aria-label="팀 상태 필터">
+                  {(["전체", "진행 중", "완료", "승인 대기", "연동 대기"] as const).map((item) => (
+                    <button key={item} className={filter === item ? "active" : ""} onClick={() => setFilter(item)}>
+                      {item}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="team-grid">
+                {filteredTeams.map((team) => (
+                  <button className="team-card" key={team.id} onClick={() => onSelect(team.lead.id)}>
+                    <span className={`status-dot ${statusClass[team.status]}`} aria-hidden="true" />
+                    <span className="mini-pixel">
+                      <PixelEmployee hair={team.lead.hair} shirt={team.lead.shirt} accent={team.lead.accent} />
+                    </span>
+                    <span className="team-copy">
+                      <b>
+                        {team.lead.name} · {team.name}
+                      </b>
+                      <small>{team.task}</small>
+                    </span>
+                    <span className={`status-pill ${statusClass[team.status]}`}>{team.status}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </section>
+
+          <section className="two-col">
+            <section className="win">
+              <div className="win-bar">
+                <span>✅ ceo.approval</span>
+                <span className="window-controls">—　▢　✕</span>
+              </div>
+              <div className="win-body approval-body">
+                <div className="approval-top">
+                  <span className="mini-badge yellow">TOP 1 제안</span>
+                  <span className="score">92점</span>
+                </div>
+                <h3>
+                  AI 회사가 매일 아침
+                  <br />
+                  나 대신 출근한다면?
+                </h3>
+                <p>지금 만들고 있는 시스템 자체를 날것의 성장기로 공개하는 크리에이터 아이덴티티 콘텐츠예요.</p>
+                <button
+                  className={`btn approve-button ${snap.approved ? "approved" : ""}`}
+                  onClick={onApprove}
+                  disabled={!snap.approvalPending}
+                >
+                  {snap.approved ? "승인 완료 · 제작팀 전달됨" : snap.approvalPending ? "이 콘텐츠 승인하기" : "대기 중인 안건 없음"}
+                </button>
+              </div>
+            </section>
+
+            <section className="win secretary">
+              <div className="win-bar">
+                <span>📋 kim_secretary.brief</span>
+                <span className="window-controls">—　▢　✕</span>
+              </div>
+              <div className="win-body">
+                <p className="brief-date">2026.07.26 · {snap.clock} 현재</p>
+                <h3>{snap.dayComplete ? "대표님, 오늘 업무가 정리됐어요." : "대표님, 현재 진행 상황이에요."}</h3>
+                <ul>
+                  <li>
+                    <span className="dot green" />
+                    {snap.phase} 진행 중 — 완료 {snap.stats.done}팀
+                  </li>
+                  <li>
+                    <span className={`dot ${snap.approvalPending ? "yellow" : "green"}`} />
+                    {snap.approvalPending ? "TOP 1 대표 확인 필요" : "대기 중인 결재 없음"}
+                  </li>
+                  <li>
+                    <span className="dot gray" />
+                    외부 서비스 연동 대기
+                  </li>
+                </ul>
+                <div className="decision-box">
+                  <span className="tiny-label">대표님이 오늘 결정할 1개</span>
+                  <strong>
+                    {snap.approvalPending
+                      ? "TOP 1 콘텐츠를 제작할지 승인해주세요."
+                      : snap.approved
+                        ? "결정 완료! 제작팀이 다음 업무를 진행해요."
+                        : "아직 올라온 안건이 없어요."}
+                  </strong>
+                </div>
+              </div>
+            </section>
+          </section>
+        </div>
+      </section>
+
+      <section className="win storage">
+        <div className="win-bar">
+          <span>📦 result_storage</span>
+          <span className="window-controls">—　▢　✕</span>
+        </div>
+        <div className="win-body">
+          <div className="section-heading">
+            <div>
+              <p className="eyebrow">RECENT OUTPUTS</p>
+              <h2>결과물 창고</h2>
+            </div>
+            {STORAGE_LINK ? (
+              <a className="btn btn-small" href={STORAGE_LINK} target="_blank" rel="noreferrer">
+                보관함 열기
+              </a>
+            ) : null}
+          </div>
+          <div className="result-table">
+            <div className="result-row header">
+              <span>결과물</span>
+              <span>담당팀</span>
+              <span>상태</span>
+              <span>바로가기</span>
+            </div>
+            <div className="result-row">
+              <b>이번 주 콘텐츠 캘린더 정리</b>
+              <span>기획 1팀</span>
+              <span className="status-pill done">최종 완료</span>
+              <span>—</span>
+            </div>
+            <div className="result-row">
+              <b>브랜드 템플릿 세팅</b>
+              <span>이미지 제작팀</span>
+              <span className="status-pill done">최종 완료</span>
+              <span>—</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <p className="dash-note">
+        대표 {CEO.name}({CEO.callsign}) · AI 직원 {teams.length}개 부서 32명 · 이 화면은 라이브 오피스와 같은 상태를
+        공유해요.
+      </p>
+    </>
+  );
 }

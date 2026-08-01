@@ -256,3 +256,58 @@ export async function reviewDraft(
     feedback: String(parsed.feedback ?? ""),
   };
 }
+
+// ---------------------------------------------------------------------------
+// 전사 부서별 "오늘 할 일" 보고 — 12개 부서 팀장이 각자 실제 AI를 호출해서
+// 오늘 할 일을 스스로 정하고 대표에게 보고한다. 대표가 승인/미승인을 결정하고,
+// 미승인이면 지시를 내려서 같은 팀장이 지시를 반영해 다시 보고한다.
+// ---------------------------------------------------------------------------
+
+export type DeptDailyReport = {
+  /** 오늘 할 일 한 줄 요약 (보고 제목) */
+  summary: string;
+  /** 구체적인 실행 계획 3~5개 */
+  steps: string[];
+  /** 왜 이렇게 하기로 했는지, 대표에게 보고하는 한두 문장 */
+  reason: string;
+};
+
+export async function deptDailyReport(
+  apiKey: string,
+  opts: {
+    deptName: string;
+    leadName: string;
+    task: string;
+    instruction?: string;
+  },
+): Promise<DeptDailyReport> {
+  const instructionLine = opts.instruction
+    ? `\n[대표 지시사항 — 반드시 반영해서 계획을 다시 짤 것]\n${opts.instruction}\n`
+    : "";
+
+  const prompt = [
+    `너는 "마이야르" 고기 콘텐츠 회사의 "${opts.deptName}" 팀장 ${opts.leadName}이야.`,
+    `이 팀이 평소에 하는 일: ${opts.task}`,
+    `오늘 아침 대표에게 보고할 "오늘 할 일" 계획을 스스로 정해서 보고해야 해.`,
+    instructionLine,
+    `아래 JSON 형식으로만 답해줘 (다른 설명 없이 JSON만):`,
+    `{`,
+    `  "summary": "오늘 할 일 한 줄 요약",`,
+    `  "steps": ["실행계획1", "실행계획2", "실행계획3"],`,
+    `  "reason": "대표에게 보고할 한두 문장 — 왜 오늘 이렇게 하기로 했는지"`,
+    `}`,
+  ].join("\n");
+
+  const raw = await callModel(apiKey, prompt, 0.75);
+  const parsed = extractJson(raw) as Partial<DeptDailyReport>;
+
+  if (!parsed.summary || !Array.isArray(parsed.steps)) {
+    throw new Error("팀장 보고 응답 형식이 이상해요. 다시 시도해주세요.");
+  }
+
+  return {
+    summary: String(parsed.summary),
+    steps: parsed.steps.map((s) => String(s)),
+    reason: String(parsed.reason ?? ""),
+  };
+}

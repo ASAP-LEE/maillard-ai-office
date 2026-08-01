@@ -1,3 +1,4 @@
+// src/game/agentPipeline.ts
 // 사이트 화면 안에서 실시간으로 돌아가는 "팀장 보고 → 승인/미승인 → 실제 작업" 파이프라인.
 // 3단계 AI가 순서대로 실제 NVIDIA NIM을 호출합니다:
 //   1) 기획 AI  - 오늘 무엇을 할지 스스로 판단해서 팀장 보고서를 씀
@@ -46,6 +47,51 @@ function extractJson(raw: string): unknown {
   const end = cleaned.lastIndexOf("}");
   if (start === -1 || end === -1) throw new Error("AI 응답에서 JSON을 찾지 못했어요.");
   return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+// ---------------------------------------------------------------------------
+// 공통: 감사(Audit) 타입 및 규칙 정의
+// ---------------------------------------------------------------------------
+export type AuditLogEntry = {
+  id: string;
+  timestamp: string;
+  stage: "기획" | "작성" | "검수";
+  targetTitle: string;
+  passed: boolean;
+  feedback: string;
+};
+
+export const AUDIT_RULES: Record<"기획" | "작성" | "검수", string[]> = {
+  "기획": ["중복된 키워드 방지", "실행 가능한 단계 확인", "과장된 내용 배제"],
+  "작성": ["과장된 표현 금지", "마크다운 형식 준수", "도입부 3줄 이내 작성"],
+  "검수": ["맞춤법 확인", "카테고리 적합성 평가", "구체적인 수치 포함 여부"],
+};
+
+export async function auditStage(
+  apiKey: string,
+  opts: { leadName: string; stage: "기획" | "작성" | "검수"; content: string; rules: string[] }
+): Promise<{ passed: boolean; feedback: string }> {
+  const prompt = [
+    `너는 "마이야르" 고기 콘텐츠 회사의 감사 담당 ${opts.leadName}이야.`,
+    `다음 단계(${opts.stage})의 결과물을 감사해줘.`,
+    `[감사 규칙]`,
+    ...opts.rules.map((r) => `- ${r}`),
+    `[내용]`,
+    opts.content.slice(0, 3000),
+    `아래 JSON 형식으로만 답해줘 (다른 설명 없이 JSON만):`,
+    `{`,
+    `  "passed": true 또는 false,`,
+    `  "feedback": "통과면 짧은 확인 메시지, 반려면 사유"`,
+    `}`
+  ].join("\n");
+
+  const raw = await callModel(apiKey, prompt, 0.3);
+  const parsed = extractJson(raw) as Partial<{ passed: boolean; feedback: string }>;
+
+  return {
+    passed: Boolean(parsed.passed),
+    feedback: String(parsed.feedback ?? ""),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +245,7 @@ export async function reviewDraft(
     `{`,
     `  "passed": true 또는 false,`,
     `  "feedback": "통과면 짧은 칭찬 한줄, 반려면 구체적으로 무엇을 고쳐야 하는지"`,
-    `}`,
+    `}`
   ].join("\n");
 
   const raw = await callModel(apiKey, prompt, 0.3);

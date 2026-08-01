@@ -96,6 +96,25 @@ export type ChatEntry = {
   text: string;
 };
 
+/**
+ * 회의/보고 기록 — "몇 시에, 누가, 무슨 내용을 말했는지"를 그대로 남겨서
+ * 나중에 보고서(report.ts → reportToText)에 그대로 옮겨 적을 수 있게 한다.
+ */
+export type ReportLogEntry = {
+  id: number;
+  time: string;
+  /** 부서 id. 특정 부서와 무관한 전사 회의는 빈 문자열 */
+  deptId: string;
+  /** 부서명(있으면) — 표시용 */
+  deptName: string;
+  /** 실제로 말한 사람 이름 */
+  speaker: string;
+  /** 말한 내용 */
+  text: string;
+  /** briefing(보고) / approved(승인) / rejected(반려) / instruction(지시) / meeting(회의 발언) */
+  kind: "briefing" | "approved" | "rejected" | "instruction" | "meeting";
+};
+
 /** 오늘 승인된 콘텐츠의 상세 제안 — "무엇을 어떻게 만들지" */
 export type ContentPlan = {
   title: string;
@@ -133,6 +152,8 @@ export type Snapshot = {
   spotlight: string | null;
   busyWithOrder: boolean;
   contentPlan: ContentPlan | null;
+  /** 오늘 있었던 회의/보고 기록 전체 (시간순) */
+  reportLog: ReportLogEntry[];
 };
 
 const PHASES = [
@@ -203,6 +224,8 @@ export class Company {
   spotlight: string | null = null;
   /** 오늘 승인 대상 콘텐츠의 상세 제안 */
   contentPlan: ContentPlan | null = null;
+  /** 오늘 있었던 회의/보고 기록 전체 — "몇 시에 누가 무슨 말을 했는지" 그대로 보관 */
+  reportLog: ReportLogEntry[] = [];
 
   private spotlightUntil = 0;
   private elapsed = 0;
@@ -247,6 +270,7 @@ export class Company {
     this.focusMode = false;
     this.spotlight = null;
     this.contentPlan = null;
+    this.reportLog = [];
     this.spotlightUntil = 0;
     this.elapsed = 0;
     this.approvalSince = null;
@@ -304,6 +328,13 @@ export class Company {
   pushLog(icon: string, text: string, tone = "pink") {
     this.log.unshift({ id: this.logSeq++, time: this.clockText(), icon, text, tone });
     if (this.log.length > 60) this.log.pop();
+  }
+
+  /** 회의 발언·팀장 보고를 "몇 시에 누가 무슨 말을 했는지" 그대로 기록해 보고서에 남긴다 */
+  pushReportLog(deptId: string, speaker: string, text: string, kind: ReportLogEntry["kind"] = "meeting") {
+    const deptName = deptId ? (roomOf(deptId)?.name ?? deptId) : "전사 회의";
+    this.reportLog.push({ id: this.logSeq++, time: this.clockText(), deptId, deptName, speaker, text, kind });
+    if (this.reportLog.length > 300) this.reportLog.shift();
   }
 
   clockText() {
@@ -632,6 +663,7 @@ export class Company {
       speaker.anim = "talk";
       this.say(speaker, text, 3.2);
       this.pushLog("🗣️", `${speaker.name}: “${text}”`, "lav");
+      this.pushReportLog(speaker.deptId, speaker.name, text, "meeting");
       yield 2.3;
       speaker.anim = "sit";
     }
@@ -661,8 +693,10 @@ export class Company {
     from.anim = "talk";
     this.say(from, line, 3);
     this.pushLog("🤝", `${from.name} → ${room.name}: “${line}”`, "pink");
+    this.pushReportLog(from.deptId, from.name, line, "meeting");
     yield 2;
     this.say(toLead, reply, 2.8);
+    this.pushReportLog(toDeptId, toLead.name, reply, "meeting");
     yield 1.6;
     from.anim = "idle";
     this.sitAtDesk(from);
@@ -1024,11 +1058,11 @@ export class Company {
   reportToCEO(
     deptId: string,
     message: string,
-    _kind: "briefing" | "approved" | "rejected" | "instruction" = "briefing",
+    kind: "briefing" | "approved" | "rejected" | "instruction" = "briefing",
   ) {
     const lead = this.agentById.get(DEPT_LEAD[deptId]?.id ?? "");
     if (!lead) return;
-    const run = () => this.reportToCEOScene(lead, deptId, message);
+    const run = () => this.reportToCEOScene(lead, deptId, message, kind);
     if (this.pipelineSlot.gen) {
       this.pipelineQueue.push(run);
     } else {
@@ -1040,6 +1074,7 @@ export class Company {
     lead: Agent,
     deptId: string,
     message: string,
+    kind: "briefing" | "approved" | "rejected" | "instruction" = "briefing",
   ): Generator<number | (() => boolean), void, void> {
     const ceo = this.agentById.get("ceo")!;
     const wasLocked = this.locked.has(lead.id);
@@ -1057,6 +1092,10 @@ export class Company {
 
     this.say(lead, message, Math.min(6, 2.2 + message.length / 22));
     this.pushChat("staff", `${lead.name} · ${roomOf(deptId).name}`, message);
+    // 실제 AI가 만든 보고/승인/반려/지시 내용을 시간·발언자와 함께 보고서용 기록으로 남긴다
+    this.pushReportLog(deptId, lead.name, message, kind);
+    const kindIcon = { briefing: "📋", approved: "✅", rejected: "❌", instruction: "📝" }[kind];
+    this.pushLog(kindIcon, `${roomOf(deptId).name} · ${lead.name}: “${message}”`, "lav");
     yield 2.4;
 
     this.say(ceo, rand(["확인했어요.", "네, 알겠습니다.", "고생하셨어요."]), 2.2);
@@ -1337,6 +1376,7 @@ export class Company {
       spotlight: this.spotlight,
       busyWithOrder: this.side.gen !== null,
       contentPlan: this.contentPlan,
+      reportLog: this.reportLog.slice(),
     };
   }
 }

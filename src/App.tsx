@@ -411,7 +411,7 @@ export default function Home() {
         <footer>
           이 툴은 갓생맘 🎀이 만들었어요
           <br />
-          <a href="https://www.instagram.com/godseng.mom/" target="_blank" rel="noreferrer">
+          <a href="[https://www.instagram.com/godseng.mom/](https://www.instagram.com/godseng.mom/)" target="_blank" rel="noreferrer">
             📷 @godseng.mom — 더 많은 크리에이터 툴 보러가기 →
           </a>
           <br />© godseng.mom · 자유롭게 쓰되 무단 재판매 금지
@@ -488,7 +488,7 @@ function AutonomousTeamPipeline() {
         content,
         rules: [...AUDIT_RULES[stage]],
       })
-        .then((verdict) => {
+        .then((verdict: { passed: boolean; feedback: string }) => {
           const entry: AuditLogEntry = {
             ...verdict,
             id: nextAuditId(),
@@ -618,7 +618,7 @@ function AutonomousTeamPipeline() {
     <section className="win rail-card" style={{ margin: "24px 0" }}>
       <div className="win-bar">
         <span>🏢 real.company (실시간 팀장 보고)</span>
-        <span className="window-controls">—　▢　✕</span>
+        <span className="window-controls">— ▢ ✕</span>
       </div>
       <div className="win-body" style={{ padding: 16 }}>
         <p style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>
@@ -829,7 +829,7 @@ function AiWriterPanel({ plan }: { plan: import("./game/sim").ContentPlan }) {
     <section className="win rail-card">
       <div className="win-bar">
         <span>✍️ ai.writer (실제 생성)</span>
-        <span className="window-controls">—　▢　✕</span>
+        <span className="window-controls">— ▢ ✕</span>
       </div>
       <div className="win-body approval-body">
         <p style={{ marginBottom: 8 }}>
@@ -907,7 +907,7 @@ function AiWriterPanel({ plan }: { plan: import("./game/sim").ContentPlan }) {
           {GITHUB_REPO ? (
             <a
               className="btn btn-ghost"
-              href={`https://github.com/${GITHUB_REPO}/actions/workflows/generate-content.yml`}
+              href={`[https://github.com/$](https://github.com/$){GITHUB_REPO}/actions/workflows/generate-content.yml`}
               target="_blank"
               rel="noreferrer"
               style={{ display: "inline-block", fontSize: 12 }}
@@ -987,7 +987,7 @@ function ArticlesView() {
     <section className="win rail-card" style={{ margin: "24px 0" }}>
       <div className="win-bar">
         <span>📰 real.content</span>
-        <span className="window-controls">—　▢　✕</span>
+        <span className="window-controls">— ▢ ✕</span>
       </div>
       <div className="win-body" style={{ padding: 16 }}>
         <p style={{ marginBottom: 12, fontSize: 13, opacity: 0.8 }}>
@@ -1128,7 +1128,7 @@ function LiveView({
           {snap.paused ? "▶ 재생" : "⏸ 일시정지"}
         </button>
         <div className="speed-wrap">
-          <span className="speed-label" title="시뮬레이션 전체(걷기·업무·대사)가 함께 빨라져요. 실제 외부 작업 속도와는 무관합니다.">
+          <span className="speed-label" title="시뮬레이션 전체(걷기·업무·대사)가 함께 빨라져요. 실제 외부 작업 속도와 무관합니다.">
             재생 속도
           </span>
           <div className="speed-group" role="group" aria-label="재생 속도">
@@ -1195,7 +1195,7 @@ function LiveView({
           <section className="win rail-card" id="ceo-approval">
             <div className="win-bar">
               <span>✅ ceo.approval</span>
-              <span className="window-controls">—　▢　✕</span>
+              <span className="window-controls">— ▢ ✕</span>
             </div>
             <div className={`win-body approval-body ${snap.approvalPending ? "pending" : ""}`}>
               {snap.approvalPending ? (
@@ -1236,7 +1236,7 @@ function LiveView({
           <section className="win rail-card feed-card">
             <div className="win-bar">
               <span>📡 live.feed</span>
-              <span className="window-controls">—　▢　✕</span>
+              <span className="window-controls">— ▢ ✕</span>
             </div>
             <div className="win-body feed-body">
               {snap.meetingTitle ? <div className="feed-now">💬 회의 진행 중 — {snap.meetingTitle}</div> : null}
@@ -1255,7 +1255,7 @@ function LiveView({
           <section className="win rail-card">
             <div className="win-bar">
               <span>👥 staff.roster</span>
-              <span className="window-controls">—　▢　✕</span>
+              <span className="window-controls">— ▢ ✕</span>
             </div>
             <div className="win-body roster-body">
               {DEPT_ROOMS.map((room) => (
@@ -1322,7 +1322,7 @@ function CeoConsole({ engine, snap }: { engine: Company; snap: Snapshot }) {
     <section className="win rail-card console-card" id="ceo-console">
       <div className="win-bar">
         <span>🎤 ceo.console — 대표 지시창</span>
-        <span className="window-controls">—　▢　✕</span>
+        <span className="window-controls">— ▢ ✕</span>
       </div>
       <div className="win-body console-body">
         <div className="console-status">
@@ -1536,7 +1536,7 @@ function DashboardView({
         <div className="win-bar">
           <span>🎀 {COMPANY.windowLabel}</span>
           <span className="window-controls" aria-hidden="true">
-            —　▢　✕
+            — ▢ ✕
           </span>
         </div>
         <div className="hero-body">
@@ -1589,7 +1589,7 @@ function DashboardView({
           <section className="win">
             <div className="win-bar">
               <span>⚡ automation.status</span>
-              <span className="window-controls">—　▢　✕</span>
+              <span className="window-controls">— ▢ ✕</span>
             </div>
             <div className="win-body">
               <div className="schedule-card">
@@ -1615,7 +1615,7 @@ function DashboardView({
           <section className="win">
             <div className="win-bar">
               <span>🔗 integrations.link</span>
-              <span className="window-controls">—　▢　✕</span>
+              <span className="window-controls">— ▢ ✕</span>
             </div>
             <div className="win-body integration-list">
               {rows.map((item) =>
@@ -1639,7 +1639,7 @@ function DashboardView({
           <section className="win">
             <div className="win-bar">
               <span>🏢 team_office.board</span>
-              <span className="window-controls">—　▢　✕</span>
+              <span className="window-controls">— ▢ ✕</span>
             </div>
             <div className="win-body">
               <div className="section-heading">
@@ -1679,7 +1679,7 @@ function DashboardView({
             <section className="win">
               <div className="win-bar">
                 <span>✅ ceo.approval</span>
-                <span className="window-controls">—　▢　✕</span>
+                <span className="window-controls">— ▢ ✕</span>
               </div>
               <div className="win-body approval-body">
                 <div className="approval-top">
@@ -1705,7 +1705,7 @@ function DashboardView({
             <section className="win secretary">
               <div className="win-bar">
                 <span>📋 kim_secretary.brief</span>
-                <span className="window-controls">—　▢　✕</span>
+                <span className="window-controls">— ▢ ✕</span>
               </div>
               <div className="win-body">
                 <p className="brief-date">2026.07.26 · {snap.clock} 현재</p>
@@ -1743,7 +1743,7 @@ function DashboardView({
       <section className="win storage">
         <div className="win-bar">
           <span>📦 result_storage</span>
-          <span className="window-controls">—　▢　✕</span>
+          <span className="window-controls">— ▢ ✕</span>
         </div>
         <div className="win-body">
           <div className="section-heading">

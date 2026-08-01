@@ -211,6 +211,9 @@ export class Company {
   /** 하루 시나리오(main)와 대표 지시로 끼어드는 장면(side)을 각각 돌린다 */
   private main: Slot = { gen: null, wait: 0, until: null };
   private side: Slot = { gen: null, wait: 0, until: null };
+  /** 실제 AI 파이프라인(기획→작성→검수) 팀장 보고 전용 슬롯 — 하루 시나리오와 무관하게 항상 돈다 */
+  private pipelineSlot: Slot = { gen: null, wait: 0, until: null };
+  private pipelineQueue: Array<() => Generator<number | (() => boolean), void, void>> = [];
   private occupancy = new Set<number>();
   private seatBook = new Map<string, Pt>();
   /** 시나리오 장면에 참여 중인 직원 — 자율 행동(커피·잡담)이 끼어들지 못하게 잠근다 */
@@ -236,6 +239,8 @@ export class Company {
     this.meetingTitle = null;
     this.main = { gen: null, wait: 0, until: null };
     this.side = { gen: null, wait: 0, until: null };
+    this.pipelineSlot = { gen: null, wait: 0, until: null };
+    this.pipelineQueue = [];
     this.seatBook.clear();
     this.locked.clear();
     this.chat = [];
@@ -1009,6 +1014,60 @@ export class Company {
     this.approved = true;
   }
 
+  /**
+   * 실제 AI 파이프라인(기획→작성→검수) 연동 전용.
+   * 해당 부서 팀장이 대표실로 걸어가서 말풍선을 띄우고, 잠시 후 자리로 돌아간다.
+   * 하루 시나리오(main)나 대표 지시(side)와는 완전히 분리된 별도 슬롯에서 돌기 때문에
+   * 출근 전이어도, 시뮬레이션을 시작하지 않았어도 항상 동작한다.
+   * kind는 말풍선 스타일 태그 용도로만 쓰고 로직에는 영향 없다(추후 확장 대비).
+   */
+  reportToCEO(
+    deptId: string,
+    message: string,
+    _kind: "briefing" | "approved" | "rejected" | "instruction" = "briefing",
+  ) {
+    const lead = this.agentById.get(DEPT_LEAD[deptId]?.id ?? "");
+    if (!lead) return;
+    const run = () => this.reportToCEOScene(lead, deptId, message);
+    if (this.pipelineSlot.gen) {
+      this.pipelineQueue.push(run);
+    } else {
+      this.pipelineSlot.gen = run();
+    }
+  }
+
+  private *reportToCEOScene(
+    lead: Agent,
+    deptId: string,
+    message: string,
+  ): Generator<number | (() => boolean), void, void> {
+    const ceo = this.agentById.get("ceo")!;
+    const wasLocked = this.locked.has(lead.id);
+    this.locked.add(lead.id);
+    lead.queue.length = 0;
+    lead.current = null;
+    lead.path = [];
+    lead.pathIdx = 0;
+
+    this.stand(lead);
+    this.spotlightRoom(deptId, 10);
+    this.goto(lead, CEO_REPORT_SPOT, "보고 중");
+    this.enqueue(lead, { k: "face", dir: "up" });
+    yield this.allFree([lead]);
+
+    this.say(lead, message, Math.min(6, 2.2 + message.length / 22));
+    this.pushChat("staff", `${lead.name} · ${roomOf(deptId).name}`, message);
+    yield 2.4;
+
+    this.say(ceo, rand(["확인했어요.", "네, 알겠습니다.", "고생하셨어요."]), 2.2);
+    yield 1.8;
+
+    this.stand(lead);
+    this.sitAtDesk(lead);
+    yield this.allFree([lead]);
+    if (!wasLocked) this.locked.delete(lead.id);
+  }
+
   setBriefingHandler(handler: (() => void) | null) {
     this.onBriefing = handler;
   }
@@ -1048,6 +1107,11 @@ export class Company {
     for (const agent of this.agents) this.stepAgent(agent, dt);
     this.runSlot(this.main, dt);
     this.runSlot(this.side, dt);
+    this.runSlot(this.pipelineSlot, dt);
+    if (!this.pipelineSlot.gen && this.pipelineQueue.length > 0) {
+      const next = this.pipelineQueue.shift()!;
+      this.pipelineSlot.gen = next();
+    }
 
     this.elapsed += dt;
     if (this.spotlight && this.elapsed > this.spotlightUntil) this.spotlight = null;

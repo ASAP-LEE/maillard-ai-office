@@ -27,10 +27,14 @@ on:
 
 permissions:
   contents: write
+  pages: write
+  id-token: write
 
 jobs:
   generate:
     runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.commit.outputs.changed }}
     steps:
       - name: 코드 가져오기
         uses: actions/checkout@v4
@@ -50,9 +54,23 @@ jobs:
         run: node scripts/generate-content.mjs
 
       - name: 생성된 원고 커밋 & 푸시
+        id: commit
         run: |
           git config user.name "마이야르 AI 원고봇"
           git config user.email "actions@github.com"
           git add public/content/
-          git diff --cached --quiet && echo "변경 없음" || git commit -m "🥩 AI 원고 자동 생성 $(date -u +%Y-%m-%d)"
-          git push
+          if git diff --cached --quiet; then
+            echo "변경 없음"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            git commit -m "🥩 AI 원고 자동 생성 $(date -u +%Y-%m-%d)"
+            git push
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # 원고 봇이 커밋한 push는 GitHub 보안 정책상 push 트리거를 다시 일으키지 않기 때문에,
+  # 새 원고가 생겼을 때(changed=true) 여기서 배포 워크플로를 직접 이어서 호출해요.
+  deploy:
+    needs: generate
+    if: needs.generate.outputs.changed == 'true'
+    uses: ./.github/workflows/deploy.yml

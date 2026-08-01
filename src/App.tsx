@@ -405,7 +405,7 @@ export default function Home() {
         ) : view === "articles" ? (
           <ArticlesView />
         ) : (
-          <AutonomousTeamPipeline />
+          <AutonomousTeamPipeline engine={engine} />
         )}
 
         <footer>
@@ -472,7 +472,7 @@ const INITIAL_PIPELINE_STATE: PipelineState = {
   retryCount: 0,
 };
 
-function AutonomousTeamPipeline() {
+function AutonomousTeamPipeline({ engine }: { engine: Company }) {
   const [apiKey, setApiKey] = useState("");
   const [showKeyField, setShowKeyField] = useState(true);
   const [state, setState] = useState<PipelineState>(INITIAL_PIPELINE_STATE);
@@ -527,6 +527,11 @@ function AutonomousTeamPipeline() {
           instruction,
         });
         setState((s) => ({ ...s, busy: false, proposal, stage: "briefing" }));
+        engine.reportToCEO(
+          "strategy1",
+          `대표님, 오늘 기획안 보고드릴게요.\n"${proposal.title}" — ${proposal.reason}`,
+          "briefing",
+        );
         runAudit(
           "기획",
           proposal.title,
@@ -549,6 +554,11 @@ function AutonomousTeamPipeline() {
           category,
         });
         setState((s) => ({ ...s, busy: false, review }));
+        engine.reportToCEO(
+          "qa",
+          `대표님, "${title}" 검수 결과예요.\n${review.passed ? "✅ 통과했어요." : "❌ 반려했어요."} ${review.feedback}`,
+          review.passed ? "approved" : "rejected",
+        );
         runAudit(
           "검수",
           title,
@@ -583,34 +593,43 @@ function AutonomousTeamPipeline() {
 
   const handleApprove = useCallback(() => {
     if (state.stage === "briefing" && state.proposal) {
+      engine.reportToCEO("strategy1", "승인 감사합니다! 바로 원고팀에 넘길게요.", "approved");
       void requestWrite(undefined);
     }
-  }, [state.stage, state.proposal, requestWrite]);
+  }, [state.stage, state.proposal, requestWrite, engine]);
 
   const handleReviewOutcome = useCallback(() => {
     if (!state.review) return;
     if (state.review.passed && state.draft && state.proposal) {
+      engine.reportToCEO("strategy2", "원고 확정했습니다! 오늘 몫은 여기까지예요.", "approved");
       setFinalDrafts((prev) => [...prev, { title: state.proposal!.title, markdown: state.draft! }]);
       setPublishedTitles((prev) => [...prev, state.proposal!.title]);
       setState(INITIAL_PIPELINE_STATE);
     } else if (state.retryCount < 2) {
       // 반려 → 원고팀이 피드백 받아서 재작성
       const feedback = state.review.feedback;
+      engine.reportToCEO("strategy2", "반려 사유 확인했어요. 바로 다시 써서 올게요.", "instruction");
       setState((s) => ({ ...s, retryCount: s.retryCount + 1, review: null, draft: null }));
       void requestWrite(feedback);
     } else {
       setState((s) => ({ ...s, error: "재작성 2회 시도 후에도 통과하지 못했어요. 기획을 바꿔서 다시 시작해주세요." }));
     }
-  }, [state.review, state.draft, state.proposal, state.retryCount, requestWrite]);
+  }, [state.review, state.draft, state.proposal, state.retryCount, requestWrite, engine]);
 
   const handleReject = useCallback(() => {
     setState((s) => ({ ...s, showInstructionBox: true }));
   }, []);
 
   const handleSendInstruction = useCallback(() => {
+    const instructionText = state.instruction.trim();
+    engine.reportToCEO(
+      "strategy1",
+      instructionText ? `네, "${instructionText}" 반영해서 다시 기획해올게요.` : "네, 다른 방향으로 다시 기획해올게요.",
+      "instruction",
+    );
     void requestPlan(state.instruction || undefined);
     setState((s) => ({ ...s, instruction: "" }));
-  }, [requestPlan, state.instruction]);
+  }, [requestPlan, state.instruction, engine]);
 
   const handleStart = useCallback(() => {
     setState(INITIAL_PIPELINE_STATE);

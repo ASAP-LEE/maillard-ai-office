@@ -95,6 +95,23 @@ function reportToText(report: DayReport): string {
   lines.push(report.log.length ? report.log.map((l) => `[${l.time}] ${l.text}`).join("\n") : "- (로그 없음)");
   lines.push("");
 
+  const kindLabel: Record<string, string> = {
+    briefing: "보고",
+    approved: "승인",
+    rejected: "반려",
+    instruction: "지시",
+    meeting: "회의",
+  };
+  lines.push("■ 회의·보고 기록 (몇 시에 · 누가 · 무슨 내용을 말했는지)");
+  lines.push(
+    report.meetingLog.length
+      ? report.meetingLog
+          .map((m) => `[${m.time}] (${kindLabel[m.kind] ?? m.kind}) ${m.deptName} · ${m.speaker}: “${m.text}”`)
+          .join("\n")
+      : "- (오늘 진행된 회의·보고 기록 없음)",
+  );
+  lines.push("");
+
   return lines.join("\n");
 }
 
@@ -550,6 +567,21 @@ function DeptApprovalPipeline({ engine }: { engine: Company }) {
     void requestReport(depts[0].id);
   }, [requestReport, depts]);
 
+  // 출근하자마자(=API 키를 입력하는 즉시) 대표 승인 없이도 바로 첫 회의가 시작되도록 자동으로 트리거한다.
+  // 키를 입력하는 도중에는 발동하지 않게 살짝 debounce를 두고, 한 번 자동 시작하면 다시 발동하지 않는다.
+  const autoStartedRef = useRef(false);
+  useEffect(() => {
+    const key = apiKey.trim();
+    if (autoStartedRef.current || key.length < 10) return;
+    const timer = setTimeout(() => {
+      if (autoStartedRef.current) return;
+      autoStartedRef.current = true;
+      setShowKeyField(false);
+      handleStart();
+    }, 600);
+    return () => clearTimeout(timer);
+  }, [apiKey, handleStart]);
+
   const handleApprove = useCallback(() => {
     if (!currentDept || !state.report) return;
     engine.reportToCEO(currentDept.id, "승인 감사합니다! 오늘 계획대로 진행할게요.", "approved");
@@ -584,8 +616,10 @@ function DeptApprovalPipeline({ engine }: { engine: Company }) {
       </div>
       <div className="win-body" style={{ padding: 16 }}>
         <p style={{ fontSize: 13, opacity: 0.8, marginBottom: 12 }}>
-          12개 부서 팀장이 순서대로 와서 오늘 할 일을 실제로 보고해요. 승인하면 다음 팀으로 넘어가고,
-          미승인하면 지시를 내려서 같은 팀장이 다시 보고받을 수 있어요.
+          API 키를 입력하면 출근하자마자 바로 첫 회의가 시작돼요. 12개 부서 팀장이 순서대로 와서 오늘 할
+          일을 실제 AI로 판단해서 보고하고, 승인하면 다음 팀으로 넘어가고, 미승인하면 지시를 내려서 같은
+          팀장이 다시 보고받을 수 있어요. 회의·보고 내용은 몇 시에 누가 무슨 말을 했는지까지 그대로
+          보고서에 남아요.
         </p>
 
         {showKeyField || !apiKey ? (
@@ -609,14 +643,39 @@ function DeptApprovalPipeline({ engine }: { engine: Company }) {
 
         {!currentDept && !done ? null : null}
 
-        {state.deptIndex === 0 && !state.report && !state.busy && !done ? (
-          <button className="btn approve-button" onClick={handleStart}>
-            전사 보고 시작하기 (1번 부서부터)
+        {state.deptIndex === 0 && !state.report && !state.busy && !done && apiKey.trim().length >= 10 ? (
+          <button
+            className="btn approve-button"
+            onClick={() => {
+              autoStartedRef.current = true;
+              setShowKeyField(false);
+              handleStart();
+            }}
+          >
+            지금 바로 회의 시작하기
           </button>
+        ) : null}
+
+        {state.deptIndex === 0 && !state.report && !state.busy && !done && apiKey.trim().length < 10 ? (
+          <p style={{ fontSize: 12, opacity: 0.7 }}>API 키를 입력하면 잠시 후 자동으로 첫 회의가 시작돼요.</p>
         ) : null}
 
         {state.busy ? (
           <p style={{ fontSize: 13 }}>⏳ {lead?.name ?? "팀장"}이 오늘 할 일을 정리하는 중...</p>
+        ) : null}
+
+        {done ? (
+          <button
+            className="btn btn-ghost"
+            style={{ marginTop: 8 }}
+            onClick={() => {
+              autoStartedRef.current = true;
+              setShowKeyField(false);
+              handleStart();
+            }}
+          >
+            🔁 오늘 회의 다시 시작하기
+          </button>
         ) : null}
 
         {state.error ? (

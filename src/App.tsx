@@ -499,12 +499,13 @@ function AutonomousTeamPipeline() {
   );
 
   const requestReview = useCallback(
-    async (markdown: string, keyword: string) => {
+    async (markdown: string, keyword: string, category: string) => {
       setState((s) => ({ ...s, busy: true, error: "" }));
       try {
         const review = await reviewDraft(apiKey, markdown, {
           leadName: DEPT_LEAD["qa"]?.name ?? "검수 팀장",
           keyword,
+          category,
         });
         setState((s) => ({ ...s, busy: false, review }));
       } catch (err) {
@@ -525,7 +526,7 @@ function AutonomousTeamPipeline() {
         });
         setState((s) => ({ ...s, busy: false, draft, stage: "reviewing" }));
         // 작성이 끝나면 곧바로 검수 AI를 호출
-        void requestReview(draft, state.proposal.keyword);
+        void requestReview(draft, state.proposal.keyword, state.proposal.category);
       } catch (err) {
         setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
       }
@@ -620,6 +621,9 @@ function AutonomousTeamPipeline() {
           <div className="report-card" style={{ marginTop: 12, padding: 12, background: "rgba(0,0,0,0.03)", borderRadius: 8 }}>
             <p style={{ fontWeight: 600, marginBottom: 4 }}>
               📋 {planDeptTitle} {planLeadName} 팀장 보고
+              <span className="mini-badge mint" style={{ marginLeft: 8, fontSize: 11 }}>
+                {state.proposal.category}
+              </span>
             </p>
             <p style={{ fontSize: 13, marginBottom: 8, opacity: 0.85 }}>{state.proposal.reason}</p>
             <div style={{ fontSize: 13, lineHeight: 1.6 }}>
@@ -682,10 +686,40 @@ function AutonomousTeamPipeline() {
         {/* 완료된 원고 목록 */}
         {finalDrafts.length > 0 ? (
           <div style={{ marginTop: 16, borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: 10 }}>
-            <p style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>✅ 오늘 확정된 원고</p>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <p style={{ fontSize: 12, fontWeight: 600 }}>✅ 오늘 확정된 원고</p>
+              {finalDrafts.length > 1 ? (
+                <button
+                  className="text-button"
+                  onClick={() => {
+                    finalDrafts.forEach((d, i) => {
+                      window.setTimeout(() => {
+                        const dateStr = new Date().toISOString().slice(0, 10);
+                        downloadMarkdownFile(`${dateStr}-${d.title.slice(0, 20)}.md`, d.markdown);
+                      }, i * 300); // 브라우저가 다운로드를 한꺼번에 막지 않도록 살짝 간격을 둠
+                    });
+                  }}
+                >
+                  📥 전체 다운로드
+                </button>
+              ) : null}
+            </div>
             {finalDrafts.map((d, i) => (
               <details key={i} style={{ marginBottom: 6 }}>
-                <summary style={{ fontSize: 13, cursor: "pointer" }}>{d.title}</summary>
+                <summary style={{ fontSize: 13, cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span>{d.title}</span>
+                  <button
+                    className="text-button"
+                    style={{ fontSize: 11 }}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      const dateStr = new Date().toISOString().slice(0, 10);
+                      downloadMarkdownFile(`${dateStr}-${d.title.slice(0, 20)}.md`, d.markdown);
+                    }}
+                  >
+                    📥 다운로드
+                  </button>
+                </summary>
                 <pre
                   style={{
                     maxHeight: 220,

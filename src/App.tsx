@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import OfficeWorld from "./game/OfficeWorld";
+import { generateRecipeDraft, type WriterResult } from "./game/aiWriter";
 import {
   buildReport,
   fetchIntegrations,
@@ -87,6 +88,19 @@ function reportToText(report: DayReport): string {
 /** 문자열을 .txt 파일로 즉시 다운로드한다 (서버 없이 브라우저에서 처리) */
 function downloadTextFile(filename: string, text: string) {
   const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/** 마크다운 원고를 .md 파일로 다운로드한다 */
+function downloadMarkdownFile(filename: string, markdown: string) {
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -401,6 +415,125 @@ export default function Home() {
   );
 }
 
+/**
+ * 원고 작성팀이 "실제로" Claude API를 호출해서 진짜 레시피 원고를 쓰는 패널.
+ * 이 사이트는 서버가 없는 정적 사이트라, API 키는 이 탭이 열려 있는 동안만
+ * 메모리(React state)에 있다가 새로고침하면 사라집니다. 어디에도 저장되지 않아요.
+ */
+function AiWriterPanel({ plan }: { plan: import("./game/sim").ContentPlan }) {
+  const [apiKey, setApiKey] = useState("");
+  const [showKeyField, setShowKeyField] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [result, setResult] = useState<WriterResult | null>(null);
+
+  const handleGenerate = useCallback(async () => {
+    if (!apiKey.trim()) {
+      setShowKeyField(true);
+      setError("먼저 API 키를 입력해주세요.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      const draft = await generateRecipeDraft(apiKey, {
+        title: plan.title,
+        keyword: plan.keyword,
+        angle: plan.angle,
+        steps: plan.steps,
+      });
+      setResult(draft);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }, [apiKey, plan]);
+
+  const handleDownload = useCallback(() => {
+    if (!result) return;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    downloadMarkdownFile(`원고_${plan.title.slice(0, 20)}_${dateStr}.md`, result.markdown);
+  }, [result, plan.title]);
+
+  return (
+    <section className="win rail-card">
+      <div className="win-bar">
+        <span>✍️ ai.writer (실제 생성)</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className="win-body approval-body">
+        <p style={{ marginBottom: 8 }}>
+          이 승인된 기획안으로 <b>실제 Claude API</b>를 호출해서 진짜 원고를 만들어요.
+          화면 연출이 아니라 진짜 텍스트가 생성됩니다.
+        </p>
+
+        {showKeyField || !apiKey ? (
+          <div style={{ marginBottom: 8 }}>
+            <input
+              type="password"
+              placeholder="sk-ant-... (Anthropic API 키)"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "6px 8px",
+                borderRadius: 6,
+                border: "1px solid #ccc",
+                marginBottom: 4,
+              }}
+            />
+            <p style={{ fontSize: 11, opacity: 0.7 }}>
+              키는 저장되지 않고 이 탭 메모리에서만 쓰여요. 새로고침하면 사라져요.
+              console.anthropic.com에서 발급받을 수 있어요.
+            </p>
+          </div>
+        ) : (
+          <button
+            className="text-button"
+            style={{ marginBottom: 8 }}
+            onClick={() => setShowKeyField(true)}
+          >
+            API 키 변경
+          </button>
+        )}
+
+        <button className="btn approve-button" onClick={handleGenerate} disabled={busy}>
+          {busy ? "원고 생성 중..." : "실제 원고 생성하기"}
+        </button>
+
+        {error ? (
+          <p style={{ color: "#c0392b", fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap" }}>{error}</p>
+        ) : null}
+
+        {result ? (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span className="mini-badge mint">생성 완료 · {result.model}</span>
+              <button className="text-button" onClick={handleDownload}>
+                📥 .md 다운로드
+              </button>
+            </div>
+            <pre
+              style={{
+                maxHeight: 260,
+                overflow: "auto",
+                whiteSpace: "pre-wrap",
+                fontSize: 12,
+                background: "rgba(0,0,0,0.04)",
+                padding: 10,
+                borderRadius: 8,
+              }}
+            >
+              {result.markdown}
+            </pre>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function LiveView({
   engine,
   snap,
@@ -572,6 +705,8 @@ function LiveView({
               )}
             </div>
           </section>
+
+          {snap.approved && snap.contentPlan ? <AiWriterPanel plan={snap.contentPlan} /> : null}
 
           <section className="win rail-card feed-card">
             <div className="win-bar">

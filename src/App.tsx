@@ -13,9 +13,9 @@ import {
 import { Company, PHASES, type Agent, type DeptStatus, type Snapshot } from "./game/sim";
 import { CEO, DEPT_BRIEF, DEPT_LEAD, STAFF } from "./game/staff";
 import { DEPT_ROOMS } from "./game/world";
-import { COMPANY, STORAGE_LINK } from "../company.config";
+import { COMPANY, GITHUB_REPO, STORAGE_LINK } from "../company.config";
 
-type View = "live" | "dashboard";
+type View = "live" | "dashboard" | "articles";
 
 /** DayReport를 사람이 읽기 좋은 텍스트로 바꾼다 */
 function reportToText(report: DayReport): string {
@@ -338,6 +338,9 @@ export default function Home() {
             <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>
               📊 대시보드
             </button>
+            <button className={view === "articles" ? "active" : ""} onClick={() => setView("articles")}>
+              📰 실제 발행된 원고
+            </button>
             <button
               className={`todo-tab ${todo ? "urgent" : ""}`}
               onClick={() => {
@@ -372,7 +375,7 @@ export default function Home() {
             onToggleAutoLoop={toggleAutoLoop}
             dayCount={dayCount}
           />
-        ) : (
+        ) : view === "dashboard" ? (
           <DashboardView
             teams={teams}
             filteredTeams={filteredTeams}
@@ -385,6 +388,8 @@ export default function Home() {
             integrations={integrations}
             publishResult={publishState.result}
           />
+        ) : (
+          <ArticlesView />
         )}
 
         <footer>
@@ -527,6 +532,162 @@ function AiWriterPanel({ plan }: { plan: import("./game/sim").ContentPlan }) {
             >
               {result.markdown}
             </pre>
+          </div>
+        ) : null}
+
+        <div style={{ marginTop: 16, borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: 12 }}>
+          <p style={{ fontSize: 12, marginBottom: 6 }}>
+            <b>또는</b> — 매일 자동으로 쌓이게 하고 싶다면, GitHub Actions로 실제 발행 파이프라인을
+            돌릴 수 있어요. "📰 실제 발행된 원고" 탭에 결과가 쌓여요.
+          </p>
+          {GITHUB_REPO ? (
+            <a
+              className="btn btn-ghost"
+              href={`https://github.com/${GITHUB_REPO}/actions/workflows/generate-content.yml`}
+              target="_blank"
+              rel="noreferrer"
+              style={{ display: "inline-block", fontSize: 12 }}
+            >
+              GitHub Actions에서 실제 생성 실행하기 →
+            </a>
+          ) : (
+            <p style={{ fontSize: 11, opacity: 0.7 }}>
+              company.config.ts의 GITHUB_REPO를 채우면 여기 바로가기 버튼이 생겨요.
+            </p>
+          )}
+          <p style={{ fontSize: 11, opacity: 0.6, marginTop: 6 }}>
+            실행 화면에서 아래 값을 넣으면 이 승인안 그대로 생성돼요 (복사해서 붙여넣기):
+          </p>
+          <pre
+            style={{
+              fontSize: 11,
+              background: "rgba(0,0,0,0.04)",
+              padding: 8,
+              borderRadius: 6,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {`title: ${plan.title}\nkeyword: ${plan.keyword}\nangle: ${plan.angle}\nsteps:\n${plan.steps.join("\n")}`}
+          </pre>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+type ArticleEntry = {
+  file: string;
+  title: string;
+  keyword: string;
+  date: string;
+  generatedAt: string;
+};
+
+/**
+ * GitHub Actions가 실제로 생성해서 쌓은 원고 목록을 보여주는 화면.
+ * public/content/index.json 을 읽어온다 (생성 스크립트가 매번 갱신함).
+ */
+function ArticlesView() {
+  const [articles, setArticles] = useState<ArticleEntry[] | null>(null);
+  const [error, setError] = useState("");
+  const [openFile, setOpenFile] = useState<string | null>(null);
+  const [openText, setOpenText] = useState("");
+  const [openBusy, setOpenBusy] = useState(false);
+
+  useEffect(() => {
+    fetch(new URL("content/index.json", document.baseURI).toString())
+      .then((res) => {
+        if (!res.ok) throw new Error("목록을 불러오지 못했어요.");
+        return res.json();
+      })
+      .then((data: ArticleEntry[]) => setArticles(data))
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+  }, []);
+
+  const openArticle = useCallback(async (file: string) => {
+    setOpenFile(file);
+    setOpenBusy(true);
+    setOpenText("");
+    try {
+      const res = await fetch(new URL(`content/${file}`, document.baseURI).toString());
+      if (!res.ok) throw new Error("원고를 불러오지 못했어요.");
+      setOpenText(await res.text());
+    } catch (err) {
+      setOpenText(err instanceof Error ? err.message : String(err));
+    } finally {
+      setOpenBusy(false);
+    }
+  }, []);
+
+  return (
+    <section className="win rail-card" style={{ margin: "24px 0" }}>
+      <div className="win-bar">
+        <span>📰 real.content</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className="win-body" style={{ padding: 16 }}>
+        <p style={{ marginBottom: 12, fontSize: 13, opacity: 0.8 }}>
+          여기 보이는 글은 화면 연출이 아니라, GitHub Actions가 실제로 Claude API를 호출해서 만든
+          진짜 원고예요. 매일 자동으로 쌓이거나, 저장소 Actions 탭에서 직접 실행할 수 있어요.
+        </p>
+
+        {error ? <p style={{ color: "#c0392b" }}>{error}</p> : null}
+
+        {articles === null && !error ? <p>목록을 불러오는 중...</p> : null}
+
+        {articles && articles.length === 0 ? (
+          <p style={{ opacity: 0.7 }}>
+            아직 실제로 생성된 원고가 없어요. GitHub 저장소 Actions 탭에서 "AI 원고 생성"
+            워크플로를 실행하면 여기에 쌓이기 시작해요.
+          </p>
+        ) : null}
+
+        {articles && articles.length > 0 ? (
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {articles.map((a) => (
+              <li
+                key={a.file}
+                style={{
+                  padding: "10px 0",
+                  borderBottom: "1px solid rgba(0,0,0,0.08)",
+                  cursor: "pointer",
+                }}
+                onClick={() => openArticle(a.file)}
+              >
+                <b>{a.title}</b>
+                <div style={{ fontSize: 12, opacity: 0.6 }}>
+                  {a.date} · 키워드: {a.keyword}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+
+        {openFile ? (
+          <div style={{ marginTop: 16, borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+              <b style={{ fontSize: 13 }}>{openFile}</b>
+              <button className="text-button" onClick={() => setOpenFile(null)}>
+                닫기
+              </button>
+            </div>
+            {openBusy ? (
+              <p>불러오는 중...</p>
+            ) : (
+              <pre
+                style={{
+                  maxHeight: 320,
+                  overflow: "auto",
+                  whiteSpace: "pre-wrap",
+                  fontSize: 12,
+                  background: "rgba(0,0,0,0.04)",
+                  padding: 10,
+                  borderRadius: 8,
+                }}
+              >
+                {openText}
+              </pre>
+            )}
           </div>
         ) : null}
       </div>
@@ -1262,3 +1423,4 @@ function DashboardView({
     </>
   );
 }
+

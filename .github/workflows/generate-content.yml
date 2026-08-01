@@ -1,0 +1,58 @@
+name: AI 원고 생성
+
+# 매일 아침 9시(KST, UTC 00:00)에 자동 실행되거나,
+# 저장소 Actions 탭에서 "Run workflow" 버튼으로 직접 실행할 수 있어요.
+# (사이트의 "실제 원고 생성" 버튼을 누르면 이 페이지로 안내되고, 여기서 값이 미리 채워져요.)
+on:
+  schedule:
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+    inputs:
+      title:
+        description: "콘텐츠 제목"
+        required: false
+        default: "고기 굽는 온도 가이드"
+      keyword:
+        description: "타깃 키워드"
+        required: false
+        default: "고기 굽는 온도"
+      angle:
+        description: "기획 의도"
+        required: false
+        default: ""
+      steps:
+        description: "실행 계획 (줄바꿈으로 구분)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 코드 가져오기
+        uses: actions/checkout@v4
+
+      - name: Node.js 설치
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 원고 생성 (Claude API 호출)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONTENT_TITLE: ${{ github.event.inputs.title }}
+          CONTENT_KEYWORD: ${{ github.event.inputs.keyword }}
+          CONTENT_ANGLE: ${{ github.event.inputs.angle }}
+          CONTENT_STEPS: ${{ github.event.inputs.steps }}
+        run: node scripts/generate-content.mjs
+
+      - name: 생성된 원고 커밋 & 푸시
+        run: |
+          git config user.name "마이야르 AI 원고봇"
+          git config user.email "actions@github.com"
+          git add public/content/
+          git diff --cached --quiet && echo "변경 없음" || git commit -m "🥩 AI 원고 자동 생성 $(date -u +%Y-%m-%d)"
+          git push

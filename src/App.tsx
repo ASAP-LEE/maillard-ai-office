@@ -3,12 +3,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import OfficeWorld from "./game/OfficeWorld";
 import { generateRecipeDraft, type WriterResult } from "./game/aiWriter";
 import {
+  auditStage,
   planContent,
   reviewDraft,
   writeDraft,
+  AUDIT_RULES,
+  type AuditLogEntry,
   type ContentProposal,
   type ReviewResult,
 } from "./game/agentPipeline";
+import { addAuditEntry, getAuditEntries, nextAuditId, subscribeAudit } from "./game/auditStore";
 import {
   buildReport,
   fetchIntegrations,
@@ -475,6 +479,32 @@ function AutonomousTeamPipeline() {
   const [publishedTitles, setPublishedTitles] = useState<string[]>([]);
   const [finalDrafts, setFinalDrafts] = useState<{ title: string; markdown: string }[]>([]);
 
+  const runAudit = useCallback(
+    (stage: "기획" | "작성" | "검수", targetTitle: string, content: string) => {
+      if (!apiKey.trim()) return; // 감사도 같은 키를 쓰지만, 없으면 조용히 건너뜀
+      void auditStage(apiKey, {
+        leadName: DEPT_LEAD["audit"]?.name ?? "감사 팀장",
+        stage,
+        content,
+        rules: [...AUDIT_RULES[stage]],
+      })
+        .then((verdict) => {
+          const entry: AuditLogEntry = {
+            ...verdict,
+            id: nextAuditId(),
+            timestamp: new Date().toISOString(),
+            stage,
+            targetTitle,
+          };
+          addAuditEntry(entry);
+        })
+        .catch(() => {
+          // 감사 실패는 본 업무를 막지 않는다 — 다음 감사 때 다시 시도됨
+        });
+    },
+    [apiKey],
+  );
+
   const requestPlan = useCallback(
     async (instruction?: string) => {
       if (!apiKey.trim()) {
@@ -491,15 +521,20 @@ function AutonomousTeamPipeline() {
           instruction,
         });
         setState((s) => ({ ...s, busy: false, proposal, stage: "briefing" }));
+        runAudit(
+          "기획",
+          proposal.title,
+          `카테고리: ${proposal.category}\n제목: ${proposal.title}\n키워드: ${proposal.keyword}\n기획의도: ${proposal.angle}\n실행계획: ${proposal.steps.join(" / ")}`,
+        );
       } catch (err) {
         setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
       }
     },
-    [apiKey, publishedTitles, finalDrafts],
+    [apiKey, publishedTitles, finalDrafts, runAudit],
   );
 
   const requestReview = useCallback(
-    async (markdown: string, keyword: string, category: string) => {
+    async (markdown: string, keyword: string, category: string, title: string) => {
       setState((s) => ({ ...s, busy: true, error: "" }));
       try {
         const review = await reviewDraft(apiKey, markdown, {
@@ -508,11 +543,16 @@ function AutonomousTeamPipeline() {
           category,
         });
         setState((s) => ({ ...s, busy: false, review }));
+        runAudit(
+          "검수",
+          title,
+          `판정: ${review.passed ? "통과" : "반려"}\n피드백: ${review.feedback}\n\n[검수 대상 원고 일부]\n${markdown.slice(0, 1500)}`,
+        );
       } catch (err) {
         setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
       }
     },
-    [apiKey],
+    [apiKey, runAudit],
   );
 
   const requestWrite = useCallback(
@@ -525,13 +565,14 @@ function AutonomousTeamPipeline() {
           feedback,
         });
         setState((s) => ({ ...s, busy: false, draft, stage: "reviewing" }));
+        runAudit("작성", state.proposal.title, draft);
         // 작성이 끝나면 곧바로 검수 AI를 호출
-        void requestReview(draft, state.proposal.keyword, state.proposal.category);
+        void requestReview(draft, state.proposal.keyword, state.proposal.category, state.proposal.title);
       } catch (err) {
         setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
       }
     },
-    [apiKey, state.proposal, requestReview],
+    [apiKey, state.proposal, requestReview, runAudit],
   );
 
   const handleApprove = useCallback(() => {

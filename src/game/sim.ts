@@ -433,6 +433,31 @@ export class Company {
     yield 1.6;
     this.sitAtDesk(seri);
 
+    // ①-2 출근 직후 전사 아침 회의 — 12개 팀 팀장 전원 소집
+    yield* this.meeting(
+      "07:10 전사 아침 회의 · 팀장 전원",
+      [
+        "research-lead", "brand-lead", "strategy1-lead", "qa-lead", "strategy2-lead",
+        "reels-lead", "carousel-lead", "partner-lead", "finance-lead", "review-lead",
+        "ops-lead", "secretary-lead",
+      ],
+      [
+        ["secretary-lead", "지금부터 전사 아침 회의 시작할게요. 오늘도 팀별로 진행 상황 짧게 공유해주세요."],
+        ["research-lead", "리서치팀은 오늘도 AI 뉴스·공식 출처부터 검증해서 후보군 정리할게요."],
+        ["brand-lead", "SEO 분석팀은 Instagram 연동 전이라 오늘도 지표는 못 만들어요. 연동되면 바로 붙일게요."],
+        ["strategy1-lead", "키워드 기획팀은 리서치팀 후보 받는 대로 롱테일 10개 뽑고 TOP 3까지 좁힐게요."],
+        ["qa-lead", "검수팀은 계량·중복·근거 기준으로 오늘도 꼼꼼히 볼게요."],
+        ["strategy2-lead", "원고팀은 승인된 키워드 나오면 바로 원고 작성 들어갈게요."],
+        ["reels-lead", "영상팀은 대본 받으면 촬영·편집 이어갈게요."],
+        ["carousel-lead", "이미지팀도 대본 나오는 대로 완성컷·썸네일 준비할게요."],
+        ["partner-lead", "감사팀은 기획·작성·검수 전 단계 실시간으로 확인하고 있을게요."],
+        ["finance-lead", "광고수익팀은 정산 파일 오면 바로 정리하겠습니다."],
+        ["review-lead", "트래픽 리뷰팀은 어제 발행분 반응부터 확인해서 학습점 정리할게요."],
+        ["ops-lead", "자동화 운영팀은 배포·색인 상태 계속 모니터링하고 있을게요."],
+        ["secretary-lead", "네, 다들 좋습니다. 오늘 결정 필요한 사항 생기면 바로 대표님께 올릴게요. 회의 마칠게요."],
+      ],
+    );
+
     // ② 시장조사
     this.phaseIndex = 2;
     yield* this.runDept("research", "AI 뉴스·공식 출처 검증", 6.5, "오늘 검증된 후보 5개를 뽑았어요.");
@@ -519,10 +544,13 @@ export class Company {
     yield this.allFree([...approvers, ceo]);
 
     this.say(approvers[0], "TOP 1은 'AI 회사가 나 대신 출근한다면?' 92점이에요.", 3.4);
+    this.pushReportLog(approvers[0].deptId, approvers[0].name, "TOP 1은 'AI 회사가 나 대신 출근한다면?' 92점이에요.", "meeting");
     yield 2.4;
     this.say(approvers[2], "대표님, 오늘 결정하실 건 이거 하나예요.", 3.2);
+    this.pushReportLog(approvers[2].deptId, approvers[2].name, "대표님, 오늘 결정하실 건 이거 하나예요.", "meeting");
     yield 2.2;
     this.say(ceo, "확인해볼게요.", 2.4);
+    this.pushReportLog("", "대표(에이쎕)", "확인해볼게요.", "meeting");
 
     // 대표가 승인 버튼을 누를 때까지 대기
     yield () => this.approved;
@@ -530,6 +558,7 @@ export class Company {
     this.approvalPending = false;
     this.meetingTitle = null;
     this.say(ceo, "승인! 이대로 갑시다.", 2.8);
+    this.pushReportLog("", "대표(에이쎕)", "승인! 이대로 갑시다.", "approved");
     this.pushLog("✅", "대표 승인 완료 — TOP 1 콘텐츠 제작을 시작합니다.", "mint");
     yield 1.6;
     for (const agent of approvers) {
@@ -572,7 +601,9 @@ export class Company {
     this.enqueue(seri, { k: "face", dir: "up" });
     yield this.allFree([seri]);
     this.say(seri, "대표님, 오늘 결정할 건 이제 없어요.", 3.2);
+    this.pushReportLog("secretary", seri.name, "대표님, 오늘 결정할 건 이제 없어요.", "briefing");
     this.say(ceo, "고생했어요 ✨", 2.6);
+    this.pushReportLog("", "대표(에이쎕)", "고생했어요 ✨", "meeting");
     this.deptStatus.secretary = "완료";
     this.briefingReady = true;
     this.onBriefing?.();
@@ -633,7 +664,11 @@ export class Company {
     this.startDept(deptId, label, dur);
     yield () => this.deptStatus[deptId] === "완료";
     const lead = this.agentById.get(DEPT_LEAD[deptId].id);
-    if (lead) this.say(lead, report, 3.2);
+    if (lead) {
+      this.say(lead, report, 3.2);
+      // 팀장 완료 보고 — 몇 시에 누가 무슨 내용을 보고했는지 그대로 보고서에 남긴다
+      this.pushReportLog(deptId, lead.name, report, "briefing");
+    }
     yield 1.2;
   }
 
@@ -800,6 +835,7 @@ export class Company {
     if (next && !this.dayComplete) lines.push(`다음 순서는 ‘${next}’입니다.`);
 
     this.pushChat("staff", "김세리", lines.join("\n"));
+    this.pushReportLog("secretary", "김세리", lines.join(" / "), "briefing");
     this.speakSecretary("현황 정리해서 올렸어요.");
   }
 

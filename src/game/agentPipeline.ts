@@ -38,7 +38,7 @@ async function callModel(apiKey: string, prompt: string, temperature = 0.7): Pro
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 800,
+        max_tokens: 1200,
         temperature,
         messages: [{ role: "user", content: prompt }],
       }),
@@ -77,8 +77,45 @@ function extractJson(raw: string): unknown {
   const cleaned = raw.trim().replace(/^```json\s*|^```\s*|```$/gm, "");
   const start = cleaned.indexOf("{");
   const end = cleaned.lastIndexOf("}");
-  if (start === -1 || end === -1) throw new Error("AI 응답에서 JSON을 찾지 못했어요.");
-  return JSON.parse(cleaned.slice(start, end + 1));
+  if (start === -1 || end === -1) {
+    // AI가 JSON 형식을 아예 지키지 않고 답한 경우 — 실제로 뭐라고 답했는지 보여줘야
+    // 사용자가 원인(거절 멘트, 빈 답변, 다른 언어 등)을 알 수 있다.
+    const preview = cleaned.slice(0, 200) || "(빈 응답)";
+    throw new Error(`AI 응답에서 JSON을 찾지 못했어요. 실제 응답: "${preview}"`);
+  }
+  try {
+    return JSON.parse(cleaned.slice(start, end + 1));
+  } catch {
+    // { 와 } 는 있지만 그 사이가 잘못된 JSON인 경우 (응답이 중간에 잘렸거나 문법 오류)
+    const preview = cleaned.slice(start, Math.min(end + 1, start + 200));
+    throw new Error(`AI가 준 JSON 형식이 깨져 있어요. 실제 응답: "${preview}..."`);
+  }
+}
+
+/**
+ * callModel + extractJson을 묶어서, JSON 파싱이 실패하면 "JSON만 답하라"는 지시를
+ * 더 강하게 붙여 한 번 더 시도한다. 8b급 소형 모델은 가끔 형식을 안 지킬 때가 있어서
+ * (설명을 덧붙이거나, 응답이 중간에 잘리거나) 재시도만으로도 대부분 해결된다.
+ */
+async function callModelForJson(apiKey: string, prompt: string, temperature = 0.7): Promise<unknown> {
+  const raw = await callModel(apiKey, prompt, temperature);
+  try {
+    return extractJson(raw);
+  } catch (firstErr) {
+    const retryPrompt = [
+      prompt,
+      "",
+      "⚠️ 방금 답변이 JSON 형식이 아니었어요. 다시 답해주세요.",
+      "설명, 인사말, 마크다운 코드펜스(```) 없이 오직 { 로 시작해서 } 로 끝나는 JSON 객체 하나만 출력하세요.",
+    ].join("\n");
+    const retryRaw = await callModel(apiKey, retryPrompt, Math.min(temperature, 0.3));
+    try {
+      return extractJson(retryRaw);
+    } catch {
+      // 재시도까지 실패하면 최초 에러를 그대로 보여준다 (원인 파악에 더 유용)
+      throw firstErr;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -117,8 +154,7 @@ export async function auditStage(
     `}`
   ].join("\n");
 
-  const raw = await callModel(apiKey, prompt, 0.3);
-  const parsed = extractJson(raw) as Partial<{ passed: boolean; feedback: string }>;
+  const parsed = (await callModelForJson(apiKey, prompt, 0.3)) as Partial<{ passed: boolean; feedback: string }>;
 
   return {
     passed: Boolean(parsed.passed),
@@ -182,8 +218,7 @@ export async function planContent(
     `}`,
   ].join("\n");
 
-  const raw = await callModel(apiKey, prompt, 0.8);
-  const parsed = extractJson(raw) as Partial<ContentProposal>;
+  const parsed = (await callModelForJson(apiKey, prompt, 0.8)) as Partial<ContentProposal>;
 
   if (!parsed.title || !parsed.keyword || !parsed.angle || !Array.isArray(parsed.steps)) {
     throw new Error("기획 AI 응답 형식이 이상해요. 다시 시도해주세요.");
@@ -280,8 +315,7 @@ export async function reviewDraft(
     `}`
   ].join("\n");
 
-  const raw = await callModel(apiKey, prompt, 0.3);
-  const parsed = extractJson(raw) as Partial<ReviewResult>;
+  const parsed = (await callModelForJson(apiKey, prompt, 0.3)) as Partial<ReviewResult>;
 
   return {
     passed: Boolean(parsed.passed),
@@ -330,8 +364,7 @@ export async function deptDailyReport(
     `}`,
   ].join("\n");
 
-  const raw = await callModel(apiKey, prompt, 0.75);
-  const parsed = extractJson(raw) as Partial<DeptDailyReport>;
+  const parsed = (await callModelForJson(apiKey, prompt, 0.75)) as Partial<DeptDailyReport>;
 
   if (!parsed.summary || !Array.isArray(parsed.steps)) {
     throw new Error("팀장 보고 응답 형식이 이상해요. 다시 시도해주세요.");

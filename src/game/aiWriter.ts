@@ -3,6 +3,11 @@
 // API 키는 브라우저(이 탭) 메모리에만 잠깐 저장되고 새로고침하면 사라집니다.
 // 즉, 이 화면을 여는 "나"만 자기 키를 넣어서 쓰는 개인용 기능입니다.
 // (공개 서비스로 여러 명이 쓰게 하려면 서버가 반드시 필요하고, 이 방식은 쓰면 안 됩니다.)
+//
+// ⚠️ NVIDIA API는 브라우저에서 직접 호출하면 CORS로 막혀서 "Failed to fetch"가 납니다.
+// 그래서 CHAT_COMPLETIONS_URL(aiProxy.ts에 정의된 Vercel 프록시)을 거쳐서 호출해요.
+
+import { CHAT_COMPLETIONS_URL, explainFetchFailure, isProxyConfigured, proxyNotConfiguredError } from "./aiProxy";
 
 export type WriterInput = {
   /** 원고 팀장이 받은 컨텐츠 기획안 제목 */
@@ -21,9 +26,8 @@ export type WriterResult = {
   generatedAt: string;
 };
 
-// build.nvidia.com에서 무료로 쓸 수 있는 OpenAI 호환 엔드포인트예요.
+// build.nvidia.com에서 무료로 쓸 수 있는 OpenAI 호환 모델이에요.
 const MODEL = "meta/llama-3.3-70b-instruct";
-const API_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
 /** 사용자가 준 기획안을 바탕으로 실제 레시피/가이드 원고를 요청하는 프롬프트를 만든다 */
 function buildPrompt(input: WriterInput): string {
@@ -64,21 +68,27 @@ export async function generateRecipeDraft(
   if (!apiKey.trim()) {
     throw new Error("API 키가 비어 있어요. 먼저 키를 입력해주세요.");
   }
+  if (!isProxyConfigured()) throw proxyNotConfiguredError();
 
-  const response = await fetch(API_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      accept: "application/json",
-      authorization: `Bearer ${apiKey.trim()}`,
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 2000,
-      temperature: 0.6,
-      messages: [{ role: "user", content: buildPrompt(input) }],
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(CHAT_COMPLETIONS_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+        authorization: `Bearer ${apiKey.trim()}`,
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 2000,
+        temperature: 0.6,
+        messages: [{ role: "user", content: buildPrompt(input) }],
+      }),
+    });
+  } catch {
+    throw explainFetchFailure();
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");

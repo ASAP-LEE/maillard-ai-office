@@ -747,6 +747,227 @@ function DeptApprovalPipeline({ engine }: { engine: Company }) {
   );
 }
 
+/**
+ * LIVE 화면(회의실 장면) 안에서 쓰는 아침 회의 승인 패널.
+ * sim.ts의 aiMorningMeeting()이 회의실에 팀장들을 앉히고 발언 차례(morningSpeakerDeptId)를
+ * 넘겨주면, 이 컴포넌트가 실제 AI(deptDailyReport)를 호출해서 보고 내용을 만들고
+ * reportMorningSpeech()로 그 결과를 씬에 주입한다.
+ * 대표가 승인하면 advanceMorningMeeting()으로 다음 팀장에게 넘어가고,
+ * 반려하면 지시사항을 담아 같은 팀장에게 다시 AI를 호출한다.
+ */
+type MorningPanelState = {
+  report: DeptDailyReport | null;
+  busy: boolean;
+  error: string;
+  showInstructionBox: boolean;
+  instruction: string;
+  /** 이 부서 차례에서 이미 보고를 만들어 씬에 주입했는지 (중복 호출 방지) */
+  requestedForDept: string | null;
+};
+
+const INITIAL_MORNING_PANEL_STATE: MorningPanelState = {
+  report: null,
+  busy: false,
+  error: "",
+  showInstructionBox: false,
+  instruction: "",
+  requestedForDept: null,
+};
+
+function AiMorningMeetingPanel({ engine, snap }: { engine: Company; snap: Snapshot }) {
+  const [apiKey, setApiKey] = useState("");
+  const [showKeyField, setShowKeyField] = useState(true);
+  const [state, setState] = useState<MorningPanelState>(INITIAL_MORNING_PANEL_STATE);
+  const [approvedCount, setApprovedCount] = useState(0);
+  const [history, setHistory] = useState<{ dept: string; summary: string }[]>([]);
+
+  const speakerDeptId = snap.morningSpeakerDeptId;
+  const dept = speakerDeptId ? DEPT_ROOMS.find((d) => d.id === speakerDeptId) ?? null : null;
+  const lead = speakerDeptId ? DEPT_LEAD[speakerDeptId] : null;
+
+  const requestReport = useCallback(
+    async (deptId: string, instruction?: string) => {
+      const targetDept = DEPT_ROOMS.find((d) => d.id === deptId);
+      const deptLead = DEPT_LEAD[deptId];
+      if (!targetDept || !deptLead) return;
+      if (!apiKey.trim()) {
+        setShowKeyField(true);
+        setState((s) => ({ ...s, error: "먼저 API 키를 입력해주세요." }));
+        return;
+      }
+      setState((s) => ({ ...s, busy: true, error: "", showInstructionBox: false, requestedForDept: deptId }));
+      try {
+        const report = await deptDailyReport(apiKey, {
+          deptName: targetDept.name,
+          leadName: deptLead.name,
+          task: DEPT_BRIEF[deptId]?.task ?? targetDept.name,
+          instruction,
+        });
+        setState((s) => ({ ...s, busy: false, report }));
+        // AI가 만든 보고 내용을 회의실 씬에 주입 — 캐릭터가 이 텍스트를 말풍선으로 말한다
+        engine.reportMorningSpeech(deptId, `"${report.summary}" — ${report.reason}`);
+      } catch (err) {
+        setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
+      }
+    },
+    [apiKey, engine],
+  );
+
+  // 회의실에서 새 팀장 차례(morningSpeakerDeptId)가 되면 자동으로 AI 보고를 요청한다
+  useEffect(() => {
+    if (!speakerDeptId) return;
+    if (!apiKey.trim() || apiKey.trim().length < 10) return;
+    if (state.requestedForDept === speakerDeptId) return;
+    setState({ ...INITIAL_MORNING_PANEL_STATE, requestedForDept: speakerDeptId });
+    void requestReport(speakerDeptId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [speakerDeptId, apiKey]);
+
+  const handleApprove = useCallback(() => {
+    if (!dept || !state.report) return;
+    setHistory((prev) => [...prev, { dept: dept.name, summary: state.report!.summary }]);
+    setApprovedCount((n) => n + 1);
+    engine.pushReportLog(dept.id, "대표", "승인. 계획대로 진행해주세요.", "approved");
+    setState(INITIAL_MORNING_PANEL_STATE);
+    engine.advanceMorningMeeting();
+  }, [dept, state.report, engine]);
+
+  const handleReject = useCallback(() => {
+    setState((s) => ({ ...s, showInstructionBox: true }));
+  }, []);
+
+  const handleSendInstruction = useCallback(() => {
+    if (!speakerDeptId) return;
+    const instructionText = state.instruction.trim();
+    engine.pushReportLog(
+      speakerDeptId,
+      "대표",
+      instructionText ? `반려: "${instructionText}" 반영해서 다시 보고해주세요.` : "반려. 다시 계획을 짜서 보고해주세요.",
+      "rejected",
+    );
+    void requestReport(speakerDeptId, state.instruction || undefined);
+    setState((s) => ({ ...s, instruction: "", showInstructionBox: false }));
+  }, [speakerDeptId, state.instruction, requestReport, engine]);
+
+  if (!snap.meetingTitle || !snap.meetingTitle.includes("아침 회의")) {
+    // 회의 중이 아니면 지금까지의 승인 이력만 짧게 보여주고 접는다
+    if (approvedCount === 0) return null;
+    return (
+      <section className="win rail-card" id="ceo-approval">
+        <div className="win-bar">
+          <span>✅ ceo.approval</span>
+          <span className="window-controls">—　▢　✕</span>
+        </div>
+        <div className="win-body approval-body">
+          <p style={{ fontSize: 13, opacity: 0.8 }}>
+            오늘 아침 회의에서 {approvedCount}개 팀 보고를 승인했어요.
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="win rail-card" id="ceo-approval">
+      <div className="win-bar">
+        <span>✅ ceo.approval · 아침 회의</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className={`win-body approval-body ${state.report ? "pending" : ""}`}>
+        {showKeyField || !apiKey ? (
+          <div style={{ marginBottom: 12 }}>
+            <input
+              type="password"
+              placeholder="nvapi-... (NVIDIA API 키)"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #ccc", marginBottom: 4 }}
+            />
+            <p style={{ fontSize: 11, opacity: 0.7 }}>
+              키를 입력하면 팀장들이 회의실에서 실제 AI로 오늘 할 일을 보고해요. 어디에도 저장되지 않아요.
+            </p>
+          </div>
+        ) : (
+          <button className="text-button" style={{ marginBottom: 8 }} onClick={() => setShowKeyField(true)}>
+            API 키 변경
+          </button>
+        )}
+
+        {!apiKey.trim() ? (
+          <p style={{ fontSize: 13, opacity: 0.75 }}>
+            🔒 팀장들이 회의실에 모여 대표님을 기다리고 있어요. API 키를 입력하면 회의가 시작돼요.
+          </p>
+        ) : null}
+
+        {state.busy ? (
+          <p style={{ fontSize: 13 }}>⏳ {lead?.name ?? "팀장"}이 오늘 할 일을 정리하는 중...</p>
+        ) : null}
+
+        {state.error ? (
+          <p style={{ color: "#c0392b", fontSize: 12, marginTop: 8, whiteSpace: "pre-wrap" }}>{state.error}</p>
+        ) : null}
+
+        {dept && state.report && !state.busy ? (
+          <div className="report-card" style={{ marginTop: 4, padding: 12, background: "rgba(0,0,0,0.03)", borderRadius: 8 }}>
+            <p style={{ fontWeight: 600, marginBottom: 4 }}>
+              📋 {dept.name} {lead?.name} 팀장 보고
+              <span className="mini-badge mint" style={{ marginLeft: 8, fontSize: 11 }}>
+                {approvedCount + 1} / {DEPT_ROOMS.length}
+              </span>
+            </p>
+            <p style={{ fontSize: 13, marginBottom: 8, opacity: 0.85 }}>{state.report.reason}</p>
+            <div style={{ fontSize: 13, lineHeight: 1.6 }}>
+              <div><b>오늘 할 일</b>: {state.report.summary}</div>
+              <div style={{ marginTop: 4 }}><b>실행 계획</b>:</div>
+              <ul style={{ margin: "4px 0 0 18px" }}>
+                {state.report.steps.map((s, i) => (
+                  <li key={i}>{s}</li>
+                ))}
+              </ul>
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <button className="btn approve-button" onClick={handleApprove}>
+                ✅ 승인
+              </button>
+              <button className="btn btn-ghost" onClick={handleReject}>
+                ❌ 반려
+              </button>
+            </div>
+            {state.showInstructionBox ? (
+              <div style={{ marginTop: 10 }}>
+                <textarea
+                  placeholder="예: 이 부분은 이렇게 바꿔서 다시 계획해주세요"
+                  value={state.instruction}
+                  onChange={(e) => setState((s) => ({ ...s, instruction: e.target.value }))}
+                  style={{ width: "100%", minHeight: 60, padding: 8, borderRadius: 6, border: "1px solid #ccc", fontSize: 13 }}
+                />
+                <button className="btn approve-button" style={{ marginTop: 6 }} onClick={handleSendInstruction}>
+                  지시 전달하고 다시 보고받기
+                </button>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {history.length > 0 ? (
+          <div style={{ marginTop: 16, borderTop: "1px solid rgba(0,0,0,0.1)", paddingTop: 10 }}>
+            <p style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+              ✅ 오늘 승인된 부서 ({history.length}/{DEPT_ROOMS.length})
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+              {history.map((h, i) => (
+                <div key={i} style={{ fontSize: 12, opacity: 0.85 }}>
+                  · {h.dept}: {h.summary}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function AutonomousTeamPipeline({ engine }: { engine: Company }) {
   const [apiKey, setApiKey] = useState("");
   const [showKeyField, setShowKeyField] = useState(true);
@@ -1548,44 +1769,32 @@ function LiveView({
         <aside className="live-rail">
           <CeoConsole engine={engine} snap={snap} />
 
-          <section className="win rail-card" id="ceo-approval">
-            <div className="win-bar">
-              <span>✅ ceo.approval</span>
-              <span className="window-controls">—　▢　✕</span>
-            </div>
-            <div className={`win-body approval-body ${snap.approvalPending ? "pending" : ""}`}>
-              {snap.approvalPending ? (
-                <>
-                  <div className="approval-top">
-                    <span className="mini-badge yellow">TOP 1 제안 · 92점</span>
-                    <span className="score blink">결재 대기</span>
-                  </div>
-                  <h3>AI 회사가 매일 아침 나 대신 출근한다면?</h3>
-                  <p>회의실에서 최아름·한도빈·김세리가 대표님을 기다리고 있어요.</p>
-                  <div className="reason-list">
-                    <span>① 실제 구축 과정</span>
-                    <span>② 저장할 운영 구조</span>
-                    <span>③ 날것의 시행착오</span>
-                  </div>
-                  <button className="btn approve-button" onClick={onApprove}>
-                    이 콘텐츠 승인하기
-                  </button>
-                </>
-              ) : (
-                <>
-                  <div className="approval-top">
-                    <span className="mini-badge mint">{snap.approved ? "오늘 결재 완료" : "결재 대기 없음"}</span>
-                  </div>
-                  <h3>{snap.approved ? "승인하신 안으로 제작 중이에요" : "아직 올라온 안건이 없어요"}</h3>
-                  <p>
-                    {snap.approved
-                      ? "대표 승인 이후 원고 → 제작 → 보관까지 이어집니다."
-                      : "업무를 시작하면 콘텐츠 전략팀이 TOP 3를 회의실로 올려요."}
-                  </p>
-                </>
-              )}
-            </div>
-          </section>
+          <AiMorningMeetingPanel engine={engine} snap={snap} />
+
+          {snap.approvalPending ? (
+            <section className="win rail-card" id="ceo-content-approval">
+              <div className="win-bar">
+                <span>✅ ceo.approval · 콘텐츠</span>
+                <span className="window-controls">—　▢　✕</span>
+              </div>
+              <div className="win-body approval-body pending">
+                <div className="approval-top">
+                  <span className="mini-badge yellow">TOP 1 제안 · 92점</span>
+                  <span className="score blink">결재 대기</span>
+                </div>
+                <h3>AI 회사가 매일 아침 나 대신 출근한다면?</h3>
+                <p>회의실에서 최아름·한도빈·김세리가 대표님을 기다리고 있어요.</p>
+                <div className="reason-list">
+                  <span>① 실제 구축 과정</span>
+                  <span>② 저장할 운영 구조</span>
+                  <span>③ 날것의 시행착오</span>
+                </div>
+                <button className="btn approve-button" onClick={onApprove}>
+                  이 콘텐츠 승인하기
+                </button>
+              </div>
+            </section>
+          ) : null}
 
           {snap.approved && snap.contentPlan ? <AiWriterPanel plan={snap.contentPlan} /> : null}
 

@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/nvidia-proxy.js": {
+      "maxDuration": 30
+    }
+  }
+}

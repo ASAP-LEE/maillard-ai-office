@@ -9,6 +9,9 @@
 //  ⚠️ API 키는 이 함수를 그대로 통과해서 NVIDIA로 전달만 되고, 어디에도 저장되지 않습니다.
 //  ⚠️ 배포 후 아래 ALLOWED_ORIGIN을 반드시 내 GitHub Pages 주소로 바꿔서 재배포하세요.
 //     (비워두면("*") 아무 사이트나 이 프록시를 갖다 쓸 수 있어서 위험해요)
+//     지금은 "*"(전체 허용) 상태입니다 — 먼저 전체 흐름이 정상 작동하는 걸 확인한 뒤,
+//     내 GitHub Pages 주소가 확정되면 아래처럼 좁혀서 재배포하세요:
+//       const ALLOWED_ORIGIN = "https://asap-lee.github.io";
 // ============================================================
 
 // ⚠️ 여기를 실제 GitHub Pages 주소로 바꾸세요 (끝에 / 없이). 예: "https://gitid.github.io"
@@ -16,7 +19,7 @@ const ALLOWED_ORIGIN = "*";
 
 const NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions";
 
-module.exports = async function handler(req, res) {
+export default async function handler(req, res) {
   const origin = req.headers.origin || "";
   const allow = ALLOWED_ORIGIN === "*" ? "*" : ALLOWED_ORIGIN;
 
@@ -73,4 +76,4 @@ module.exports = async function handler(req, res) {
   } catch (err) {
     res.status(502).json({ error: "NVIDIA 서버 호출에 실패했습니다.", detail: String(err) });
   }
-};
+}

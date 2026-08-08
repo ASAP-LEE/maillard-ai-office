@@ -130,6 +130,17 @@ type Slot = {
   until: (() => boolean) | null;
 };
 
+/**
+ * 아침 회의에서 "지금 발언 차례인 팀장"의 상태.
+ * 실제 AI 호출(deptDailyReport)과 승인/반려 판단은 App.tsx가 담당하고,
+ * sim.ts는 그 결과를 받아서 캐릭터를 움직이고 말풍선을 띄우는 연출만 한다.
+ */
+export type MorningSpeaker = {
+  deptId: string;
+  /** 대표의 승인/반려를 기다리는 중인지 — true면 다음 팀장으로 자동 진행하지 않는다 */
+  awaitingDecision: boolean;
+};
+
 export type Snapshot = {
   clock: string;
   running: boolean;
@@ -154,6 +165,10 @@ export type Snapshot = {
   contentPlan: ContentPlan | null;
   /** 오늘 있었던 회의/보고 기록 전체 (시간순) */
   reportLog: ReportLogEntry[];
+  /** 지금 아침 회의가 대표의 발언 요청(다음 팀장 보고 트리거)을 기다리는 중인지 */
+  morningMeetingWaiting: boolean;
+  /** 아침 회의에서 현재 발언 차례인 부서 id (회의 중이 아니면 null) */
+  morningSpeakerDeptId: string | null;
 };
 
 const PHASES = [
@@ -226,7 +241,13 @@ export class Company {
   contentPlan: ContentPlan | null = null;
   /** 오늘 있었던 회의/보고 기록 전체 — "몇 시에 누가 무슨 말을 했는지" 그대로 보관 */
   reportLog: ReportLogEntry[] = [];
+  /** 아침 회의: 다음 팀장 보고가 시작되길 기다리는 중인지 (대표가 버튼을 눌러야 진행) */
+  morningMeetingWaiting = false;
+  /** 아침 회의: 지금 발언 차례인 부서 id */
+  morningSpeakerDeptId: string | null = null;
 
+  /** App.tsx가 AI로 만든 보고 텍스트를 아침 회의 씬에 전달하는 통로 (내부 전용) */
+  private pendingMorningSpeech: string | null = null;
   private spotlightUntil = 0;
   private elapsed = 0;
   private approvalSince: number | null = null;
@@ -271,6 +292,9 @@ export class Company {
     this.spotlight = null;
     this.contentPlan = null;
     this.reportLog = [];
+    this.morningMeetingWaiting = false;
+    this.morningSpeakerDeptId = null;
+    this.pendingMorningSpeech = null;
     this.spotlightUntil = 0;
     this.elapsed = 0;
     this.approvalSince = null;
@@ -433,30 +457,14 @@ export class Company {
     yield 1.6;
     this.sitAtDesk(seri);
 
-    // ①-2 출근 직후 전사 아침 회의 — 12개 팀 팀장 전원 소집
-    yield* this.meeting(
-      "07:10 전사 아침 회의 · 팀장 전원",
-      [
-        "research-lead", "brand-lead", "strategy1-lead", "qa-lead", "strategy2-lead",
-        "reels-lead", "carousel-lead", "partner-lead", "finance-lead", "review-lead",
-        "ops-lead", "secretary-lead",
-      ],
-      [
-        ["secretary-lead", "지금부터 전사 아침 회의 시작할게요. 오늘도 팀별로 진행 상황 짧게 공유해주세요."],
-        ["research-lead", "리서치팀은 오늘도 AI 뉴스·공식 출처부터 검증해서 후보군 정리할게요."],
-        ["brand-lead", "SEO 분석팀은 Instagram 연동 전이라 오늘도 지표는 못 만들어요. 연동되면 바로 붙일게요."],
-        ["strategy1-lead", "키워드 기획팀은 리서치팀 후보 받는 대로 롱테일 10개 뽑고 TOP 3까지 좁힐게요."],
-        ["qa-lead", "검수팀은 계량·중복·근거 기준으로 오늘도 꼼꼼히 볼게요."],
-        ["strategy2-lead", "원고팀은 승인된 키워드 나오면 바로 원고 작성 들어갈게요."],
-        ["reels-lead", "영상팀은 대본 받으면 촬영·편집 이어갈게요."],
-        ["carousel-lead", "이미지팀도 대본 나오는 대로 완성컷·썸네일 준비할게요."],
-        ["partner-lead", "감사팀은 기획·작성·검수 전 단계 실시간으로 확인하고 있을게요."],
-        ["finance-lead", "광고수익팀은 정산 파일 오면 바로 정리하겠습니다."],
-        ["review-lead", "트래픽 리뷰팀은 어제 발행분 반응부터 확인해서 학습점 정리할게요."],
-        ["ops-lead", "자동화 운영팀은 배포·색인 상태 계속 모니터링하고 있을게요."],
-        ["secretary-lead", "네, 다들 좋습니다. 오늘 결정 필요한 사항 생기면 바로 대표님께 올릴게요. 회의 마칠게요."],
-      ],
-    );
+    // ①-2 출근 직후 전사 아침 회의 — 12개 팀 팀장 전원 소집.
+    // 대사는 고정 대본이 아니라 실제 AI(deptDailyReport)가 그때그때 만들고,
+    // 대표(사용자)가 각 팀장 보고를 승인/반려하며 진행한다. (App.tsx가 진행을 운전한다)
+    yield* this.aiMorningMeeting([
+      "research-lead", "brand-lead", "strategy1-lead", "qa-lead", "strategy2-lead",
+      "reels-lead", "carousel-lead", "partner-lead", "finance-lead", "review-lead",
+      "ops-lead", "secretary-lead",
+    ]);
 
     // ② 시장조사
     this.phaseIndex = 2;
@@ -712,6 +720,94 @@ export class Company {
     this.meetingTitle = null;
     yield this.allFree(crew);
     this.unlock(crew);
+  }
+
+  /**
+   * AI 기반 전사 아침 회의. 팀장 전원을 회의실에 앉히고, 한 명씩 차례로:
+   *  1) morningSpeakerDeptId를 세팅해서 "지금 이 팀장이 보고할 차례"임을 App.tsx에 알림
+   *  2) App.tsx가 deptDailyReport(AI)를 호출해서 실제 보고 내용을 만들고
+   *     reportMorningSpeech()로 그 결과를 이 씬에 주입한다 (말풍선으로 표시)
+   *  3) morningMeetingWaiting = true로 두고, 대표가 승인/반려를 누를 때까지 멈춘다
+   *     - 승인: App.tsx가 advanceMorningMeeting()을 호출해 다음 팀장으로
+   *     - 반려: App.tsx가 지시사항을 담아 같은 팀장에게 다시 AI 호출 → reportMorningSpeech() 재주입
+   */
+  private *aiMorningMeeting(ids: string[]): Generator<number | (() => boolean), void, void> {
+    this.meetingTitle = "07:10 전사 아침 회의 · 팀장 전원";
+    this.pushLog("💬", `회의 소집: 전사 아침 회의 (${ids.length}명)`, "lav");
+    const crew = ids.map((id) => this.agentById.get(id)!);
+    this.lock(crew);
+    crew.forEach((agent, i) => {
+      this.stand(agent);
+      this.say(agent, "회의실로 갈게요.", 2);
+      const seat = this.bookSeat(agent, i);
+      this.goto(agent, seat, "회의 중");
+      this.enqueue(
+        agent,
+        { k: "face", dir: seat.y < 7 ? "down" : "up" },
+        { k: "anim", a: "sit" },
+        { k: "status", s: "회의 중" },
+      );
+    });
+    yield this.allFree(crew);
+    yield 0.6;
+
+    for (const deptId of ids) {
+      this.morningSpeakerDeptId = deptId;
+      const speaker = this.agentById.get(deptId)!;
+      // 첫 발언 요청 — 이때만 pendingMorningSpeech를 비워서 App.tsx의 새 요청을 기다린다.
+      // (반려로 인한 재요청 때는 이미 pendingMorningSpeech가 채워진 채로 루프에 재진입하므로 지우면 안 된다)
+      this.morningMeetingWaiting = false;
+      this.pendingMorningSpeech = null;
+
+      // 이 팀장 차례에서 여러 번(반려 → 재보고) 발언할 수 있으므로 내부 루프로 처리한다.
+      // App.tsx가 advanceMorningMeeting()을 부르면(승인) 다음 팀장으로, 그 전에
+      // reportMorningSpeech()가 다시 호출되면(반려 후 재작성) 같은 자리에서 재생한다.
+      for (;;) {
+        // App.tsx가 AI 호출을 마치고 reportMorningSpeech()를 부를 때까지 대기
+        yield () => this.pendingMorningSpeech !== null;
+
+        const text = this.pendingMorningSpeech!;
+        this.pendingMorningSpeech = null;
+        speaker.anim = "talk";
+        this.say(speaker, text, Math.min(6, 2.2 + text.length / 22));
+        this.pushLog("🗣️", `${speaker.name}: “${text}”`, "lav");
+        this.pushReportLog(speaker.deptId, speaker.name, text, "briefing");
+        yield 2.4;
+        speaker.anim = "sit";
+
+        // 대표의 승인/반려를 기다린다.
+        //  - 승인(advanceMorningMeeting): morningMeetingWaiting=false, 재발언 요청 없음 → 다음 팀장으로
+        //  - 반려: App.tsx가 지시사항을 담아 다시 AI를 호출하고 reportMorningSpeech()를 다시 부른다
+        this.morningMeetingWaiting = true;
+        yield () => !this.morningMeetingWaiting || this.pendingMorningSpeech !== null;
+        if (!this.morningMeetingWaiting) break; // 승인됨 → 다음 팀장
+        // 아직 morningMeetingWaiting === true인데 여기 도달했다면 반려로 인한 재발언 요청.
+        // pendingMorningSpeech는 이미 새 텍스트로 채워져 있으므로 그대로 루프 위로 올라가 재생한다.
+        this.morningMeetingWaiting = false;
+      }
+    }
+
+    this.morningSpeakerDeptId = null;
+    yield 0.8;
+    for (const agent of crew) {
+      this.releaseSeat(agent);
+      this.stand(agent);
+      this.sitAtDesk(agent);
+    }
+    this.meetingTitle = null;
+    yield this.allFree(crew);
+    this.unlock(crew);
+  }
+
+  /** App.tsx가 AI(deptDailyReport)로 만든 보고 내용을 아침 회의 씬에 주입한다 */
+  reportMorningSpeech(deptId: string, text: string) {
+    if (this.morningSpeakerDeptId !== deptId) return;
+    this.pendingMorningSpeech = text;
+  }
+
+  /** 대표가 현재 발언자의 보고를 승인해서 다음 팀장으로 넘어간다 */
+  advanceMorningMeeting() {
+    this.morningMeetingWaiting = false;
   }
 
   /** 부서 간 전달 — 직접 걸어가서 말하고 돌아온다 */
@@ -1413,6 +1509,8 @@ export class Company {
       busyWithOrder: this.side.gen !== null,
       contentPlan: this.contentPlan,
       reportLog: this.reportLog.slice(),
+      morningMeetingWaiting: this.morningMeetingWaiting,
+      morningSpeakerDeptId: this.morningSpeakerDeptId,
     };
   }
 }

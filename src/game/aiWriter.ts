@@ -27,7 +27,9 @@ export type WriterResult = {
 };
 
 // build.nvidia.com에서 무료로 쓸 수 있는 OpenAI 호환 모델이에요.
-const MODEL = "meta/llama-3.3-70b-instruct";
+// ⚠️ 70b 모델은 무료 엔드포인트에서 응답이 2분 넘게 걸려 Vercel 타임아웃(504)이 자주 나서
+//    훨씬 빠른 8b 모델로 낮췄어요. 품질 대비 속도 이점이 커서 이 용도엔 8b로 충분해요.
+const MODEL = "meta/llama-3.1-8b-instruct";
 
 /** 사용자가 준 기획안을 바탕으로 실제 레시피/가이드 원고를 요청하는 프롬프트를 만든다 */
 function buildPrompt(input: WriterInput): string {
@@ -70,10 +72,16 @@ export async function generateRecipeDraft(
   }
   if (!isProxyConfigured()) throw proxyNotConfiguredError();
 
+  // 프록시(Vercel)가 120초에서 강제 종료되므로, 그보다 살짝 짧게 클라이언트에서 먼저
+  // 끊어서 "타임아웃"이라는 걸 명확히 알려준다 (그냥 fetch 실패로 뭉개지지 않도록).
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 110_000);
+
   let response: Response;
   try {
     response = await fetch(CHAT_COMPLETIONS_URL, {
       method: "POST",
+      signal: controller.signal,
       headers: {
         "content-type": "application/json",
         accept: "application/json",
@@ -81,17 +89,29 @@ export async function generateRecipeDraft(
       },
       body: JSON.stringify({
         model: MODEL,
-        max_tokens: 2000,
+        max_tokens: 900,
         temperature: 0.6,
         messages: [{ role: "user", content: buildPrompt(input) }],
       }),
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(
+        "AI 응답이 110초 안에 오지 않아 중단했어요. NVIDIA 무료 엔드포인트가 혼잡한 것 같아요. 잠시 후 다시 시도해주세요.",
+      );
+    }
     throw explainFetchFailure();
+  } finally {
+    clearTimeout(timeoutId);
   }
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    if (response.status === 504) {
+      throw new Error(
+        "AI 서버 응답이 너무 오래 걸려 시간 초과됐어요 (504). NVIDIA 무료 엔드포인트가 혼잡한 상태일 수 있어요. 잠시 후 다시 시도해주세요.",
+      );
+    }
     throw new Error(
       `API 호출 실패 (${response.status}). 키가 올바른지, build.nvidia.com에서 사용량이 남아있는지 확인해주세요.\n${text.slice(0, 300)}`,
     );

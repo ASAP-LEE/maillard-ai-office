@@ -5,7 +5,7 @@
   "outputDirectory": "public",
   "functions": {
     "api/nvidia-proxy.js": {
-      "maxDuration": 30
+      "maxDuration": 120
     }
   }
 }

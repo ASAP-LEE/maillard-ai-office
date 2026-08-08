@@ -17,7 +17,7 @@
 //   4) 저장 → git push 하면 GitHub Pages 사이트에도 반영됩니다
 // ============================================================
 
-const PROXY_BASE_URL = ""; // ⚠️ 여기에 Vercel 배포 주소를 넣으세요. 예: "https://your-app.vercel.app"
+const PROXY_BASE_URL = "https://maillard-ai-office-asap9.vercel.app"; // ⚠️ Vercel 배포 주소
 
 export const CHAT_COMPLETIONS_URL = `${PROXY_BASE_URL}/api/nvidia-proxy`;
 

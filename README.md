@@ -140,6 +140,70 @@ AI 호출은 **NVIDIA NIM(build.nvidia.com) 무료 티어**를 써서 완전 무
 
 ---
 
+## 🔌 Vercel 프록시 설정 (AI 호출 필수 — 이거 안 하면 "Failed to fetch" 남)
+
+NVIDIA NIM API는 브라우저(GitHub Pages 같은 정적 사이트)에서 **직접 호출하면
+CORS 정책으로 막혀서 무조건 "Failed to fetch"가 납니다.** API 키가 맞고 틀리고와
+무관하게, 서버 없이 브라우저 코드만으로는 원천적으로 우회가 불가능해요.
+
+그래서 이 저장소엔 아주 얇은 중계 서버(프록시) 코드가 `api/nvidia-proxy.js`에
+이미 들어있어요. **Vercel(완전 무료)에 이 저장소를 올리기만 하면** 자동으로
+서버리스 함수로 배포되고, 그 순간부터 AI 호출이 정상 작동합니다.
+
+> ⚠️ **역할 분담이 중요해요.**
+> - **화면(사이트)은 GitHub Pages에서만 봅니다.** (`https://내아이디.github.io/maillard-ai-office/`)
+> - **Vercel 주소는 API 중계용일 뿐, 브라우저로 직접 들어가서 볼 게 없어요.**
+>   `https://내프로젝트이름.vercel.app`을 브라우저로 직접 열면 흰 화면이 뜨는 게
+>   **정상**입니다 — 그 주소는 `aiProxy.ts`가 내부적으로만 호출하는 API 창구예요.
+
+### 설정 방법 (한 번만 하면 됨, 5분)
+
+1. **vercel.com** 접속 → **GitHub 계정으로 로그인** (카드 등록 불필요, 완전 무료)
+2. **Add New → Project** 클릭 → 이 저장소(`maillard-ai-office`)를 **Import**
+3. 설정 그대로 두고 **Deploy** 클릭
+   (`vercel.json`에 빌드를 생략하도록 이미 설정돼 있어서, Vercel은 화면을 빌드하지 않고
+   `api/nvidia-proxy.js` 함수만 배포합니다)
+4. 배포가 끝나면 `https://내프로젝트이름.vercel.app` 같은 주소가 나옵니다 → **복사**
+   (Vercel 프로젝트 대시보드 상단 "Domains"에서 언제든 다시 확인 가능)
+5. 이 저장소의 `src/game/aiProxy.ts` 파일을 열어서:
+   ```ts
+   const PROXY_BASE_URL = ""; // 여기에
+   ```
+   따옴표 안에 방금 복사한 Vercel 주소를 붙여넣기 (끝에 `/` 넣지 않기):
+   ```ts
+   const PROXY_BASE_URL = "https://내프로젝트이름.vercel.app";
+   ```
+6. (보안 강화, 선택이지만 권장) `api/nvidia-proxy.js` 파일 맨 위의
+   ```js
+   const ALLOWED_ORIGIN = "*";
+   ```
+   를 내 GitHub Pages 주소로 바꿔서, 다른 사이트가 내 프록시를 도용 못 하게 막기:
+   ```js
+   const ALLOWED_ORIGIN = "https://내아이디.github.io";
+   ```
+   (끝에 `/` 없이, `github.io`까지만) 이렇게 바꾸면 Vercel도 다시 배포해야 적용됩니다
+   (`git push`만 하면 Vercel이 자동 재배포). **처음엔 `"*"`로 두고 전체 흐름이 정상
+   작동하는 것부터 확인한 뒤 나중에 좁혀도 됩니다.**
+7. 저장 후:
+   ```bash
+   git add .
+   git commit -m "Vercel 프록시 주소 연결"
+   git push
+   ```
+8. 몇 분 뒤 GitHub Pages 사이트(`https://내아이디.github.io/maillard-ai-office/`)가
+   다시 배포되면, 그 주소에서 ai.writer 패널이나 "🏢 실시간 진짜 회사" 탭에
+   NVIDIA API 키를 넣고 실행해보세요. 이제 실제로 AI가 호출되고 원고가 생성됩니다.
+
+### 잘 안 될 때 체크리스트
+
+- **Vercel 주소(`xxx.vercel.app`)를 브라우저로 열었더니 흰 화면** → 정상입니다. 그 주소는 API 전용이라 화면이 없어요. 화면은 GitHub Pages 주소로 보세요.
+- **GitHub Pages 사이트에서 여전히 Failed to fetch** → `aiProxy.ts`의 `PROXY_BASE_URL`이 비어있거나 오타 없는지 확인 (끝에 `/` 넣으면 안 됨)
+- **403 Forbidden** → `ALLOWED_ORIGIN`을 내 GitHub Pages 주소로 바꿨는데 실제 접속 주소와 다른 경우. 정확히 일치해야 함 (`https://` 포함, 끝 `/` 제외)
+- **401/키 오류** → build.nvidia.com에서 발급받은 키가 맞는지, `nvapi-`로 시작하는지 확인
+- **Vercel 배포 자체가 실패** → Vercel 대시보드의 빌드 로그 확인. `vercel.json`의 `buildCommand: false` 덕분에 보통은 빌드 단계 자체를 건너뛰어서 실패할 일이 거의 없습니다.
+
+---
+
 ## 🏢 실시간 진짜 회사 (팀장 보고 → 승인/미승인)
 
 사이트의 **"🏢 실시간 진짜 회사"** 탭에서는 GitHub Actions 없이, 그 자리에서 바로

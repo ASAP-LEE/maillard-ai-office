@@ -204,6 +204,18 @@ CORS 정책으로 막혀서 무조건 "Failed to fetch"가 납니다.** API 키�
 
 ---
 
+## 📊 Search Console 실제 연동 (SEO 분석팀 · 검색순위/유입 키워드)
+
+SEO 분석팀(`brand`)은 기본적으로 "연동 대기" 상태예요. 실제 Google Search Console
+데이터를 연결하려면 **[SEARCH_CONSOLE_SETUP.md](./SEARCH_CONSOLE_SETUP.md)** 문서를
+따라 Google Cloud 서비스 계정 발급 → Search Console 권한 부여 → Vercel 환경변수
+등록까지 진행하세요. 코드는 이미 준비되어 있어서, 이 설정만 마치면 대시보드에
+실제 클릭수·노출수·CTR·평균순위·검색어별 데이터가 자동으로 뜹니다.
+
+연동 전까지는 지표를 지어내지 않고 정직하게 "연동 대기"로만 표시됩니다.
+
+---
+
 ## 🏢 실시간 진짜 회사 (팀장 보고 → 승인/미승인)
 
 사이트의 **"🏢 실시간 진짜 회사"** 탭에서는 GitHub Actions 없이, 그 자리에서 바로

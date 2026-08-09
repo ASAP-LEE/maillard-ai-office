@@ -814,12 +814,31 @@ function AiMorningMeetingPanel({ engine, snap }: { engine: Company; snap: Snapsh
       const targetDept = DEPT_ROOMS.find((d) => d.id === deptId);
       const deptLead = DEPT_LEAD[deptId];
       if (!targetDept || !deptLead) return;
+
+      setState((s) => ({ ...s, busy: true, error: "", showInstructionBox: false, requestedForDept: deptId }));
+
+      // API 키가 없으면 실제 AI 대신 부서별로 미리 준비된 기본 보고를 대신 넣는다.
+      // 키가 없다고 회의가 영원히 멈춰버리면(=하루 전체가 07:10에서 정지) 안 되므로,
+      // 항상 하루가 끝까지 진행되도록 보장한다. 키를 넣으면 그때부터는 실제 AI 보고로 진행된다.
       if (!apiKey.trim()) {
-        setShowKeyField(true);
-        setState((s) => ({ ...s, error: "먼저 API 키를 입력해주세요." }));
+        const brief = DEPT_BRIEF[deptId];
+        const report: DeptDailyReport = {
+          summary: brief?.report ?? `${targetDept.name} 오늘 할 일을 진행합니다.`,
+          steps: [brief?.task, brief?.tomorrow, brief?.improve].filter((s): s is string => Boolean(s)),
+          reason: instruction
+            ? `지시사항("${instruction}") 반영해서 기본 계획으로 다시 보고할게요. (API 키 미입력 — 기본 보고)`
+            : "AI 키가 없어 기본 계획으로 보고할게요. 키를 입력하면 그때부터 실시간 AI 보고로 바뀌어요.",
+        };
+        window.setTimeout(
+          () => {
+            setState((s) => ({ ...s, busy: false, report }));
+            engine.reportMorningSpeech(deptId, `"${report.summary}" — ${report.reason}`);
+          },
+          500 + Math.random() * 500,
+        );
         return;
       }
-      setState((s) => ({ ...s, busy: true, error: "", showInstructionBox: false, requestedForDept: deptId }));
+
       try {
         const report = await deptDailyReport(apiKey, {
           deptName: targetDept.name,
@@ -831,16 +850,27 @@ function AiMorningMeetingPanel({ engine, snap }: { engine: Company; snap: Snapsh
         // AI가 만든 보고 내용을 회의실 씬에 주입 — 캐릭터가 이 텍스트를 말풍선으로 말한다
         engine.reportMorningSpeech(deptId, `"${report.summary}" — ${report.reason}`);
       } catch (err) {
-        setState((s) => ({ ...s, busy: false, error: err instanceof Error ? err.message : String(err) }));
+        // AI 호출이 실패해도 회의가 영원히 멈추지 않도록, 잠시 후 기본 보고로 자동 대체한다.
+        const brief = DEPT_BRIEF[deptId];
+        const fallback: DeptDailyReport = {
+          summary: brief?.report ?? `${targetDept.name} 오늘 할 일을 진행합니다.`,
+          steps: [brief?.task, brief?.tomorrow, brief?.improve].filter((s): s is string => Boolean(s)),
+          reason: "AI 호출에 실패해서 기본 계획으로 대신 보고할게요.",
+        };
+        const message = err instanceof Error ? err.message : String(err);
+        setState((s) => ({ ...s, busy: false, error: `${message} — 잠시 후 기본 보고로 진행합니다.`, report: fallback }));
+        window.setTimeout(() => {
+          engine.reportMorningSpeech(deptId, `"${fallback.summary}" — ${fallback.reason}`);
+        }, 1200);
       }
     },
     [apiKey, engine],
   );
 
-  // 회의실에서 새 팀장 차례(morningSpeakerDeptId)가 되면 자동으로 AI 보고를 요청한다
+  // 회의실에서 새 팀장 차례(morningSpeakerDeptId)가 되면 자동으로 AI 보고를 요청한다.
+  // API 키 유무와 무관하게 항상 요청한다 — 키가 없으면 requestReport 내부에서 기본 보고로 대체된다.
   useEffect(() => {
     if (!speakerDeptId) return;
-    if (!apiKey.trim() || apiKey.trim().length < 10) return;
     if (state.requestedForDept === speakerDeptId) return;
     setState({ ...INITIAL_MORNING_PANEL_STATE, requestedForDept: speakerDeptId });
     void requestReport(speakerDeptId);
@@ -908,7 +938,8 @@ function AiMorningMeetingPanel({ engine, snap }: { engine: Company; snap: Snapsh
               style={{ width: "100%", padding: "6px 8px", borderRadius: 6, border: "1px solid #ccc", marginBottom: 4 }}
             />
             <p style={{ fontSize: 11, opacity: 0.7 }}>
-              키를 입력하면 팀장들이 회의실에서 실제 AI로 오늘 할 일을 보고해요. 어디에도 저장되지 않아요.
+              키를 입력하면 팀장들이 회의실에서 실제 AI로 오늘 할 일을 보고해요. 키가 없어도 기본 계획으로 회의는
+              계속 진행돼요. 어디에도 저장되지 않아요.
             </p>
           </div>
         ) : (
@@ -919,7 +950,8 @@ function AiMorningMeetingPanel({ engine, snap }: { engine: Company; snap: Snapsh
 
         {!apiKey.trim() ? (
           <p style={{ fontSize: 13, opacity: 0.75 }}>
-            🔒 팀장들이 회의실에 모여 대표님을 기다리고 있어요. API 키를 입력하면 회의가 시작돼요.
+            💡 API 키가 없어서 팀장들이 기본 계획으로 보고하고 있어요. 실시간 AI 보고를 보고 싶으면 위에 키를
+            입력하세요.
           </p>
         ) : null}
 

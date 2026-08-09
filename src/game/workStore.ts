@@ -20,7 +20,7 @@ export type Store<T> = {
   subscribe: (cb: Subscriber) => () => void;
 };
 
-function makeStore<T>(initial: T): Store<T> {
+export function makeStore<T>(initial: T): Store<T> {
   let state = initial;
   const subs: Subscriber[] = [];
   return {
@@ -44,7 +44,7 @@ function makeStore<T>(initial: T): Store<T> {
  * localStorage에 그대로 남아있을 수 있다. 그 상태로 복원되면 "로딩 중" 화면에 영원히
  * 갇히므로, 복원 직후 busy만 false로 되돌려 사용자가 다시 시도할 수 있게 한다.
  */
-function resetBusyOnRestore<T extends { busy: boolean }>(store: Store<T>): Store<T> {
+export function resetBusyOnRestore<T extends { busy: boolean }>(store: Store<T>): Store<T> {
   if (store.get().busy) {
     store.set((s) => ({ ...s, busy: false }));
   }
@@ -72,7 +72,7 @@ function readPersisted<T>(key: string, fallback: T): T {
  *
  * ⚠️ API 키처럼 민감한 값은 이 함수를 쓰지 않고 makeStore()만 사용해 메모리에만 둔다.
  */
-function makePersistedStore<T>(key: string, initial: T): Store<T> {
+export function makePersistedStore<T>(key: string, initial: T): Store<T> {
   const restored = readPersisted<T>(key, initial);
   const base = makeStore<T>(restored);
   const storageKey = STORAGE_PREFIX + key;

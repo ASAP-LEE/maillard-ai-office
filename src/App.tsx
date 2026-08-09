@@ -27,6 +27,13 @@ import { Company, PHASES, type Agent, type DeptStatus, type Snapshot } from "./g
 import { CEO, DEPT_BRIEF, DEPT_LEAD, STAFF } from "./game/staff";
 import { DEPT_ROOMS } from "./game/world";
 import { COMPANY, GITHUB_REPO, STORAGE_LINK } from "../company.config";
+import {
+  loadSearchConsoleData,
+  refreshSearchConsoleConnection,
+  searchConsoleConnectionStore,
+  searchConsolePanelStore,
+  useStore as useSearchConsoleStore,
+} from "./game/searchConsoleStore";
 
 type View = "live" | "dashboard" | "articles" | "company";
 
@@ -241,6 +248,23 @@ export default function Home() {
       .then(setIntegrations)
       .catch(() => setIntegrations(null));
   }, []);
+
+  // Search Console이 실제로 연결됐는지 확인한다. 반드시 서버(Vercel 함수)가 Google
+  // 인증에 실제로 성공했다는 응답을 받은 경우에만 SEO 분석팀의 "연동 대기"를 해제한다.
+  // 확인에 실패하거나 아직 설정 전이면 아무것도 바꾸지 않고 기존처럼 "연동 대기"로 둔다.
+  useEffect(() => {
+    let cancelled = false;
+    refreshSearchConsoleConnection().then((status) => {
+      if (cancelled) return;
+      engine.setIntegrationConnected("brand", status.connected);
+      if (status.connected) {
+        void loadSearchConsoleData();
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [engine]);
 
   const sendReport = useCallback(
     async (auto: boolean) => {
@@ -2055,6 +2079,131 @@ type TeamRow = {
   report: string;
 };
 
+const GSC_RANGE_OPTIONS: { label: string; days: number }[] = [
+  { label: "7일", days: 7 },
+  { label: "28일", days: 28 },
+  { label: "90일", days: 90 },
+];
+
+/** SEO 분석팀 — 실제 Search Console 데이터 (연동 전엔 정직하게 "연동 대기"만 보여준다) */
+function SearchConsolePanel() {
+  const [connection] = useSearchConsoleStore(searchConsoleConnectionStore);
+  const [panel] = useSearchConsoleStore(searchConsolePanelStore);
+  const [rangeDays, setRangeDays] = useState(28);
+
+  const onRefresh = useCallback((days: number) => {
+    setRangeDays(days);
+    void loadSearchConsoleData(days);
+  }, []);
+
+  const connected = connection.status?.connected ?? false;
+
+  return (
+    <section className="win">
+      <div className="win-bar">
+        <span>📊 seo.room · Search Console</span>
+        <span className="window-controls">—　▢　✕</span>
+      </div>
+      <div className="win-body">
+        {connection.checking ? (
+          <p className="brief-date">연동 상태 확인 중…</p>
+        ) : !connected ? (
+          <div className="decision-box">
+            <span className="tiny-label">SEO 분석팀 · 연동 대기</span>
+            <strong>
+              {connection.status?.reason ?? "Search Console이 아직 연동되지 않았어요."}
+            </strong>
+            <p style={{ marginTop: 8, fontSize: 13, opacity: 0.8 }}>
+              지표 없이 순위를 지어내지 않아요. SEARCH_CONSOLE_SETUP.md 안내대로 연동하면 이 자리에
+              실제 클릭수·노출수·CTR·평균순위가 표시됩니다.
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="section-heading">
+              <div>
+                <p className="eyebrow">LIVE · {connection.status?.siteUrl}</p>
+                <h2>검색 성과 (최근 {rangeDays}일)</h2>
+              </div>
+              <div className="filter-tabs" role="group" aria-label="조회 기간">
+                {GSC_RANGE_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.days}
+                    className={rangeDays === opt.days ? "active" : ""}
+                    onClick={() => onRefresh(opt.days)}
+                    disabled={panel.busy}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {panel.error ? (
+              <p className="brief-date" style={{ color: "#c0546b" }}>
+                {panel.error}
+              </p>
+            ) : null}
+
+            {panel.busy && !panel.queries ? (
+              <p className="brief-date">지표 불러오는 중…</p>
+            ) : (
+              <>
+                <section className="summary-grid" aria-label="검색 성과 요약">
+                  <article className="metric mint">
+                    <span>클릭수</span>
+                    <strong>{panel.queries?.totals.clicks.toLocaleString() ?? "—"}</strong>
+                    <small>CLICKS</small>
+                  </article>
+                  <article className="metric pink">
+                    <span>노출수</span>
+                    <strong>{panel.queries?.totals.impressions.toLocaleString() ?? "—"}</strong>
+                    <small>IMPRESSIONS</small>
+                  </article>
+                  <article className="metric lav">
+                    <span>CTR</span>
+                    <strong>{panel.queries ? `${(panel.queries.totals.ctr * 100).toFixed(1)}%` : "—"}</strong>
+                    <small>CTR</small>
+                  </article>
+                  <article className="metric white">
+                    <span>평균순위</span>
+                    <strong>{panel.queries ? panel.queries.totals.position.toFixed(1) : "—"}</strong>
+                    <small>POSITION</small>
+                  </article>
+                </section>
+
+                <div className="result-table">
+                  <div className="result-row header">
+                    <span>검색어</span>
+                    <span>클릭</span>
+                    <span>노출</span>
+                    <span>순위</span>
+                  </div>
+                  {(panel.queries?.items ?? []).slice(0, 8).map((row) => (
+                    <div className="result-row" key={row.keys.join("|")}>
+                      <b>{row.keys[0] ?? "-"}</b>
+                      <span>{row.clicks}</span>
+                      <span>{row.impressions}</span>
+                      <span>{row.position.toFixed(1)}</span>
+                    </div>
+                  ))}
+                  {panel.queries && panel.queries.items.length === 0 ? (
+                    <p className="brief-date">이 기간에는 검색 데이터가 없어요.</p>
+                  ) : null}
+                </div>
+
+                {panel.lastFetchedAt ? (
+                  <p className="brief-date">마지막 갱신: {new Date(panel.lastFetchedAt).toLocaleString("ko-KR")}</p>
+                ) : null}
+              </>
+            )}
+          </>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function DashboardView({
   teams,
   filteredTeams,
@@ -2078,8 +2227,21 @@ function DashboardView({
   integrations: IntegrationStatus | null;
   publishResult: PublishResult | null;
 }) {
+  const [gscConnection] = useSearchConsoleStore(searchConsoleConnectionStore);
+
   // Notion·Discord 같은 외부 서비스로 자동 전송하지 않는다. 보고서는 감사팀이 직접
   // 다운로드하도록 하고, 나머지는 아직 실제로 연동이 안 된 항목만 "대기"로 정직하게 표시한다.
+  const gscRow = gscConnection.checking
+    ? { name: "Search Console (SEO 분석팀)", status: "확인 중…", tone: "lav", href: "" }
+    : gscConnection.status?.connected
+      ? { name: "Search Console (SEO 분석팀)", status: "연동됨", tone: "mint", href: "" }
+      : {
+          name: "Search Console (SEO 분석팀)",
+          status: gscConnection.status?.reason ? "연동 대기" : "미설정",
+          tone: "lav",
+          href: "",
+        };
+
   const liveRows = integrations
     ? [
         {
@@ -2088,11 +2250,12 @@ function DashboardView({
           tone: publishResult?.ready ? "mint" : "lav",
           href: "",
         },
+        gscRow,
         { name: "Instagram", status: integrations.instagram?.need ?? "연동 대기", tone: "lav", href: "" },
         { name: "Gmail", status: integrations.gmail?.need ?? "연동 대기", tone: "lav", href: "" },
         { name: "재무 파일", status: integrations.finance?.need ?? "자료 대기", tone: "lav", href: "" },
       ]
-    : [];
+    : [gscRow];
   const rows = [...integrations2Static, ...liveRows];
 
   return (
@@ -2239,6 +2402,8 @@ function DashboardView({
               </div>
             </div>
           </section>
+
+          <SearchConsolePanel />
 
           <section className="two-col">
             <section className="win">

@@ -187,11 +187,18 @@ const PHASES = [
   "업무 종료",
 ];
 
+/**
+ * 외부 연동이 실제로 안 붙어 있는 부서 집합.
+ * 기본값은 둘 다 막힌 상태(=기존 동작과 동일)이며, 실제 연동에 "성공"했을 때만
+ * Company.setIntegrationConnected()로 해당 부서를 이 집합에서 뺀다.
+ * 절대로 미리 낙관적으로 비우지 않는다 — 연동 확인 없이 여기서 빼면 없는 지표를
+ * 있는 것처럼 보여주는 셈이 되기 때문이다.
+ */
 const BLOCKED_DEPTS = new Set(["brand", "finance"]);
 
 /** 연동 대기 부서가 멈춰 있는 진짜 이유 (+ 해결 방법) */
 export const BLOCK_REASON: Record<string, string> = {
-  brand: "Instagram 계정이 아직 연동 전이라 지표를 읽을 수 없어요. 없는 숫자를 만들지는 않습니다. 연동만 되면 바로 돌려요.",
+  brand: "Search Console이 아직 연동 전이라 지표를 읽을 수 없어요. 없는 숫자를 만들지는 않습니다. 연동만 되면 바로 돌려요.",
   finance: "재무 현황 파일이 아직 안 왔어요. 대표님이 파일만 주시면 그날 안에 정리합니다.",
 };
 
@@ -470,15 +477,24 @@ export class Company {
     this.phaseIndex = 2;
     yield* this.runDept("research", "AI 뉴스·공식 출처 검증", 6.5, "오늘 검증된 후보 5개를 뽑았어요.");
 
-    // ③ 브랜드 분석 — 연동 대기라 라운지로
+    // ③ SEO 분석 — 실제 Search Console 연동 여부에 따라 씬이 갈린다
     this.phaseIndex = 3;
     const bora = this.agentById.get("brand-lead")!;
     this.stand(bora);
-    this.say(bora, "Instagram 미연동이라 수치는 못 만들어요.", 3);
-    this.pushLog("🧬", "브랜드 인텔리전스팀: Instagram 미연동 → 분석값을 만들지 않고 기록만 남김", "lav");
-    this.goto(bora, rand(LOUNGE_ROOM.loiter), "휴식");
-    this.enqueue(bora, { k: "wait", dur: 4 }, { k: "fn", fn: () => this.say(bora, "연결되면 바로 돌립니다.", 2.4) });
-    this.sitAtDesk(bora);
+    if (BLOCKED_DEPTS.has("brand")) {
+      this.say(bora, "Search Console 미연동이라 수치는 못 만들어요.", 3);
+      this.pushLog("🧬", "SEO 분석팀: Search Console 미연동 → 분석값을 만들지 않고 기록만 남김", "lav");
+      this.goto(bora, rand(LOUNGE_ROOM.loiter), "휴식");
+      this.enqueue(bora, { k: "wait", dur: 4 }, { k: "fn", fn: () => this.say(bora, "연결되면 바로 돌립니다.", 2.4) });
+      this.sitAtDesk(bora);
+    } else {
+      this.say(bora, "Search Console 연동 확인! 실제 지표로 분석 시작할게요.", 3);
+      this.deptStatus.brand = "진행 중";
+      this.pushLog("📊", "SEO 분석팀: Search Console 연동 확인 → 클릭수·노출수·CTR·순위 실데이터 분석 시작", "mint");
+      this.enqueue(bora, { k: "wait", dur: 3 }, { k: "fn", fn: () => this.say(bora, "이번 주 순위 변동 정리했어요.", 2.6) });
+      this.sitAtDesk(bora);
+      this.deptStatus.brand = "완료";
+    }
     this.pushLog("🕵️", "감사팀: 오늘 진행되는 기획·작성·검수 단계를 실시간으로 확인합니다.", "lav");
 
     // ④ 회의 1 — 시장조사 → 전략1 → QA 인수인계
@@ -1241,6 +1257,30 @@ export class Company {
 
   setBriefingHandler(handler: (() => void) | null) {
     this.onBriefing = handler;
+  }
+
+  /**
+   * 외부 연동이 실제로 확인됐을 때만 호출한다. 절대로 낙관적으로 미리 부르면 안 된다 —
+   * 호출자(App.tsx)는 반드시 서버가 실제 인증에 성공했다는 응답을 받은 뒤에만 이 메서드를
+   * connected: true로 호출해야 한다.
+   *
+   * connected: false로 부르면 (예: 연동이 끊긴 걸 나중에 감지한 경우) 다시 "연동 대기"로
+   * 되돌린다 — 연동 없이 완료 상태로 남아있는 것도 마찬가지로 정직하지 않기 때문이다.
+   */
+  setIntegrationConnected(deptId: string, connected: boolean) {
+    if (connected) {
+      BLOCKED_DEPTS.delete(deptId);
+      if (this.deptStatus[deptId] === "연동 대기") {
+        this.deptStatus[deptId] = "대기";
+        this.pushLog("🔗", `${roomOf(deptId).name}: 외부 연동 확인 완료 — 정상 업무를 시작할 수 있어요.`, "mint");
+      }
+    } else {
+      BLOCKED_DEPTS.add(deptId);
+      if (this.deptStatus[deptId] && this.deptStatus[deptId] !== "연동 대기") {
+        this.deptStatus[deptId] = "연동 대기";
+        this.pushLog("⚠️", `${roomOf(deptId).name}: 외부 연동이 끊어진 것으로 확인됐어요 — 연동 대기로 전환합니다.`, "lav");
+      }
+    }
   }
 
   togglePause() {

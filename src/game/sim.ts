@@ -31,6 +31,10 @@ export type AgentStatus =
 export type Anim = "idle" | "walk" | "type" | "talk" | "sit";
 export type Facing = "up" | "down" | "left" | "right";
 
+/** 아침 회의: App.tsx가 AI 보고를 넣어줄 때까지 이 시간(시뮬 elapsed 초) 넘게 응답이 없으면
+ * 엔진이 스스로 기본 보고문으로 대체해 진행한다 — 회의가 여기서 영원히 멈추는 걸 막기 위함 */
+const MORNING_SPEECH_TIMEOUT = 12;
+
 const WALK_SPEED = 3.6; // tiles / sec
 /**
  * 사내 시계는 '시뮬레이션 시간' 기준으로 흐른다 — 시뮬 1초 = 1.6분.
@@ -255,6 +259,8 @@ export class Company {
 
   /** App.tsx가 AI로 만든 보고 텍스트를 아침 회의 씬에 전달하는 통로 (내부 전용) */
   private pendingMorningSpeech: string | null = null;
+  /** 이 시각(elapsed)까지 pendingMorningSpeech가 안 채워지면 기본 보고로 자동 대체한다 */
+  private morningSpeechDeadline: number | null = null;
   private spotlightUntil = 0;
   private elapsed = 0;
   private approvalSince: number | null = null;
@@ -302,6 +308,7 @@ export class Company {
     this.morningMeetingWaiting = false;
     this.morningSpeakerDeptId = null;
     this.pendingMorningSpeech = null;
+    this.morningSpeechDeadline = null;
     this.spotlightUntil = 0;
     this.elapsed = 0;
     this.approvalSince = null;
@@ -774,13 +781,25 @@ export class Company {
       // (반려로 인한 재요청 때는 이미 pendingMorningSpeech가 채워진 채로 루프에 재진입하므로 지우면 안 된다)
       this.morningMeetingWaiting = false;
       this.pendingMorningSpeech = null;
+      // App.tsx의 AiMorningMeetingPanel이 화면에 없거나(다른 탭 이동) AI 호출이 걸리지 않으면
+      // pendingMorningSpeech가 영원히 안 채워져 하루 전체(게이지·시계 진행)가 여기서 멈춰버린다.
+      // 일정 시간 응답이 없으면 엔진이 스스로 기본 보고문으로 대신 채워 진행을 이어간다.
+      this.morningSpeechDeadline = this.elapsed + MORNING_SPEECH_TIMEOUT;
 
       // 이 팀장 차례에서 여러 번(반려 → 재보고) 발언할 수 있으므로 내부 루프로 처리한다.
       // App.tsx가 advanceMorningMeeting()을 부르면(승인) 다음 팀장으로, 그 전에
       // reportMorningSpeech()가 다시 호출되면(반려 후 재작성) 같은 자리에서 재생한다.
       for (;;) {
-        // App.tsx가 AI 호출을 마치고 reportMorningSpeech()를 부를 때까지 대기
-        yield () => this.pendingMorningSpeech !== null;
+        // App.tsx가 AI 호출을 마치고 reportMorningSpeech()를 부를 때까지 대기 (단, 타임아웃되면 자동 진행)
+        yield () => {
+          if (this.pendingMorningSpeech !== null) return true;
+          if (this.morningSpeechDeadline !== null && this.elapsed >= this.morningSpeechDeadline) {
+            this.pendingMorningSpeech = this.fallbackMorningSpeech(deptId);
+            return true;
+          }
+          return false;
+        };
+        this.morningSpeechDeadline = null;
 
         const text = this.pendingMorningSpeech!;
         this.pendingMorningSpeech = null;
@@ -798,8 +817,12 @@ export class Company {
         yield () => !this.morningMeetingWaiting || this.pendingMorningSpeech !== null;
         if (!this.morningMeetingWaiting) break; // 승인됨 → 다음 팀장
         // 아직 morningMeetingWaiting === true인데 여기 도달했다면 반려로 인한 재발언 요청.
-        // pendingMorningSpeech는 이미 새 텍스트로 채워져 있으므로 그대로 루프 위로 올라가 재생한다.
+        // pendingMorningSpeech가 이미 채워져 있으면 그대로 재생하고, 아직이면(=App.tsx가 반려만
+        // 기록하고 재요청을 못 걸었을 때) 여기서도 타임아웃 후 자동 진행되도록 데드라인을 다시 건다.
         this.morningMeetingWaiting = false;
+        if (this.pendingMorningSpeech === null) {
+          this.morningSpeechDeadline = this.elapsed + MORNING_SPEECH_TIMEOUT;
+        }
       }
     }
 
@@ -819,6 +842,14 @@ export class Company {
   reportMorningSpeech(deptId: string, text: string) {
     if (this.morningSpeakerDeptId !== deptId) return;
     this.pendingMorningSpeech = text;
+    this.morningSpeechDeadline = null;
+  }
+
+  /** App.tsx의 AI 호출이 늦어지거나 걸리지 않을 때 엔진이 대신 쓰는 기본 보고문 */
+  private fallbackMorningSpeech(deptId: string): string {
+    const brief = DEPT_BRIEF[deptId];
+    const summary = brief?.report ?? "오늘 할 일을 진행합니다.";
+    return `"${summary}" — 응답이 늦어져 기본 계획으로 대신 보고할게요.`;
   }
 
   /** 대표가 현재 발언자의 보고를 승인해서 다음 팀장으로 넘어간다 */
